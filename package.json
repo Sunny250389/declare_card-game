@@ -11,12 +11,12 @@
     "test:engine": "node scripts/engine-smoke-test.js"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^1.24.0",
-    "expo": "^53.0.0",
-    "expo-status-bar": "~2.2.3",
-    "react": "^19.0.0",
-    "react-native": "^0.79.0",
-    "react-native-safe-area-context": "^5.4.0"
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "expo": "^54.0.0",
+    "expo-status-bar": "~3.0.8",
+    "react": "^19.1.0",
+    "react-native": "^0.81.0",
+    "react-native-safe-area-context": "^5.6.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0"
