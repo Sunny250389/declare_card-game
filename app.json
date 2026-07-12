@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Declare",
+    "slug": "declare-card-game",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.declare.cardgame"
+    },
+    "android": {
+      "package": "com.declare.cardgame"
+    },
+    "extra": {
+      "supports": ["ios", "android"],
+      "backend": "FastAPI WebSocket scaffold in main.py"
+    }
+  }
+}
