@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Modal,
@@ -29,6 +29,9 @@ import {
 import { playUntilHumanTurn } from "./src/engine/ai";
 
 const SAVE_KEY = "declare.savedMatch.v1";
+const USER_KEY = "declare.user.v1";
+const BACKEND_KEY = "declare.backendUrl.v1";
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 
 const baseSetup = {
   numberOfPlayers: 4,
@@ -38,7 +41,7 @@ const baseSetup = {
 };
 
 export default function App() {
-  const [screen, setScreen] = useState("home");
+  const [screen, setScreen] = useState("login");
   const [setup, setSetup] = useState(baseSetup);
   const [match, setMatch] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -46,12 +49,29 @@ export default function App() {
   const [scoreboardOpen, setScoreboardOpen] = useState(false);
   const [savedAvailable, setSavedAvailable] = useState(false);
   const [onlineRoom, setOnlineRoom] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authToken, setAuthToken] = useState(null);
+  const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
+  const [onlineStatus, setOnlineStatus] = useState("");
+  const roomSocketRef = useRef(null);
 
   const theme = useMemo(() => makeTheme(settings.darkMode), [settings.darkMode]);
   const styles = useMemo(() => createStyles(theme, settings.largeCards), [theme, settings.largeCards]);
 
   useEffect(() => {
     AsyncStorage.getItem(SAVE_KEY).then((value) => setSavedAvailable(Boolean(value)));
+    AsyncStorage.getItem(USER_KEY).then((value) => {
+      if (!value) return;
+      const saved = JSON.parse(value);
+      if (saved.user && saved.token) {
+        setAuthUser(saved.user);
+        setAuthToken(saved.token);
+        setScreen("home");
+      }
+    });
+    AsyncStorage.getItem(BACKEND_KEY).then((value) => {
+      if (value) setBackendUrl(value);
+    });
   }, []);
 
   useEffect(() => {
@@ -87,6 +107,101 @@ export default function App() {
     setScreen("gameplay");
   }
 
+  async function loginOnline({ email, password, username, mode, verificationCode }) {
+    const normalizedUrl = normalizeBackendUrl(backendUrl);
+    setBackendUrl(normalizedUrl);
+    await AsyncStorage.setItem(BACKEND_KEY, normalizedUrl);
+    const path = mode === "signup" ? "/auth/signup" : mode === "verify" ? "/auth/verify-email" : mode === "reset" ? "/auth/reset-password" : "/auth/login";
+    const payload = mode === "verify" ? { email, code: verificationCode } : mode === "reset" ? { email, code: verificationCode, password } : { email, password, username };
+    const response = await fetch(`${normalizedUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "Login failed.");
+    if (body.requires_verification) return body;
+    setAuthUser(body.user);
+    setAuthToken(body.token);
+    await AsyncStorage.setItem(USER_KEY, JSON.stringify({ user: body.user, token: body.token }));
+    setScreen("home");
+    return body;
+  }
+
+  async function resendVerification(email) {
+    const response = await fetch(`${normalizeBackendUrl(backendUrl)}/auth/resend-verification`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "Unable to resend verification code.");
+    return body;
+  }
+
+  async function forgotPassword(email) {
+    const normalizedUrl = normalizeBackendUrl(backendUrl);
+    const response = await fetch(`${normalizedUrl}/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "Unable to reset password.");
+    return body;
+  }
+
+  async function logoutOnline() {
+    if (roomSocketRef.current) roomSocketRef.current.close();
+    roomSocketRef.current = null;
+    setAuthUser(null);
+    setAuthToken(null);
+    setOnlineRoom(null);
+    await AsyncStorage.removeItem(USER_KEY);
+    setScreen("home");
+  }
+
+  function connectRoomSocket(roomCode) {
+    if (roomSocketRef.current) roomSocketRef.current.close();
+    const socket = new WebSocket(`${httpToWs(normalizeBackendUrl(backendUrl))}/ws/rooms/${roomCode}?token=${encodeURIComponent(authToken || "")}`);
+    roomSocketRef.current = socket;
+    socket.onopen = () => setOnlineStatus("Connected to room.");
+    socket.onerror = () => setOnlineStatus("Connection problem. Check the backend URL and Wi-Fi.");
+    socket.onclose = () => setOnlineStatus("Disconnected from room.");
+    socket.onmessage = (message) => {
+      const event = JSON.parse(message.data);
+      if (event.type === "Snapshot") {
+        setOnlineRoom(event.payload.room);
+        if (event.payload.match) {
+          setMatch(event.payload.match);
+          setScreen(event.payload.match.status === "playing" ? "gameplay" : event.payload.match.status);
+        }
+      }
+      if (event.type === "RoomJoined" && event.payload.room) {
+        setOnlineRoom(event.payload.room);
+      }
+      if ((event.type === "GameStarted" || event.type === "GameStateSynced") && event.payload.match) {
+        setMatch(event.payload.match);
+        setSelectedIds([]);
+        setScreen(event.payload.match.status === "playing" ? "gameplay" : event.payload.match.status);
+      }
+      if (event.payload?.error) Alert.alert("Move blocked", event.payload.error);
+    };
+  }
+
+  function sendOnlineAction(type, payload = {}) {
+    if (!roomSocketRef.current || roomSocketRef.current.readyState !== WebSocket.OPEN || !onlineRoom) return;
+    roomSocketRef.current.send(JSON.stringify({
+      type,
+      payload
+    }));
+  }
+
+  function startOnlineMatch() {
+    if (!onlineRoom) return;
+    sendOnlineAction("GameStarted");
+  }
+
   async function resumeMatch() {
     const saved = await AsyncStorage.getItem(SAVE_KEY);
     if (!saved) return;
@@ -98,6 +213,7 @@ export default function App() {
 
   function updateMatchWith(action) {
     try {
+      if (match?.mode === "online") return;
       const next = action(match);
       setMatch(next);
       setSelectedIds([]);
@@ -129,18 +245,22 @@ export default function App() {
         onStatistics={() => setScreen("statistics")}
         onSettings={() => setScreen("settings")}
         onOnline={() => setScreen("online")}
+        user={authUser}
+        onLogin={() => setScreen("login")}
       />
     ),
     setup: <SetupScreen styles={styles} setup={setup} setSetup={setSetup} onBack={() => setScreen("home")} onStart={startMatch} />,
+    login: <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} />,
     gameplay: match && (
       <GameplayScreen
         styles={styles}
         match={match}
+        localPlayerId={match.mode === "online" ? authUser?.id : null}
         selectedIds={selectedIds}
         onSelectCard={selectCard}
-        onDraw={(source) => updateMatchWith((state) => drawCard(state, currentPlayer(state).id, source))}
-        onDiscard={() => updateMatchWith((state) => discardCards(state, currentPlayer(state).id, selectedIds))}
-        onDeclare={() => updateMatchWith((state) => declareRound(state, currentPlayer(state).id))}
+        onDraw={(source) => match.mode === "online" ? sendOnlineAction("CardDrawn", { source }) : updateMatchWith((state) => drawCard(state, currentPlayer(state).id, source))}
+        onDiscard={() => match.mode === "online" ? sendOnlineAction("CardsDiscarded", { cardIds: selectedIds }) : updateMatchWith((state) => discardCards(state, currentPlayer(state).id, selectedIds))}
+        onDeclare={() => match.mode === "online" ? sendOnlineAction("DeclareAttempted") : updateMatchWith((state) => declareRound(state, currentPlayer(state).id))}
         onMenu={() => setScreen("home")}
       />
     ),
@@ -149,6 +269,10 @@ export default function App() {
         styles={styles}
         match={match}
         onContinue={() => {
+          if (match.mode === "online") {
+            sendOnlineAction("RoundFinished");
+            return;
+          }
           const next = playUntilHumanTurn(nextRound(match));
           setMatch(next);
           setScreen(next.status === "playing" ? "gameplay" : next.status);
@@ -159,7 +283,24 @@ export default function App() {
     matchResult: match && <MatchResultScreen styles={styles} match={match} onPlayAgain={startMatch} onNewMatch={() => setScreen("setup")} onExit={() => setScreen("home")} />,
     statistics: <StatisticsScreen styles={styles} match={match} onBack={() => setScreen("home")} />,
     settings: <SettingsScreen styles={styles} settings={settings} setSettings={setSettings} onBack={() => setScreen("home")} />,
-    online: <OnlineScreen styles={styles} room={onlineRoom} setRoom={setOnlineRoom} onBack={() => setScreen("home")} />
+    online: authUser && authToken ? (
+      <OnlineScreen
+        styles={styles}
+        user={authUser}
+        authToken={authToken}
+        backendUrl={backendUrl}
+        setBackendUrl={setBackendUrl}
+        room={onlineRoom}
+        setRoom={setOnlineRoom}
+        status={onlineStatus}
+        onBack={() => setScreen("home")}
+        onConnectRoom={connectRoomSocket}
+        onStartMatch={startOnlineMatch}
+        onLogout={logoutOnline}
+      />
+    ) : (
+      <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} />
+    )
   }[screen];
 
   return (
@@ -172,20 +313,142 @@ export default function App() {
   );
 }
 
-function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics, onSettings, onOnline }) {
+function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics, onSettings, onOnline, user, onLogin }) {
   return (
     <Screen styles={styles}>
       <View style={styles.hero}>
         <Text style={styles.kicker}>DECLARE</Text>
         <Text style={styles.title}>Lowest hand wins.</Text>
+        <Text style={styles.muted}>{user ? `Signed in as ${user.username}` : "Sign in to play online."}</Text>
       </View>
       <PrimaryButton styles={styles} label="New Game" onPress={onNewGame} />
       <PrimaryButton styles={styles} label="Resume Match" disabled={!savedAvailable} onPress={onResume} />
-      <PrimaryButton styles={styles} label="Online Game" onPress={onOnline} />
+      {user ? <PrimaryButton styles={styles} label="Online Game" onPress={onOnline} /> : <PrimaryButton styles={styles} label="Login" onPress={onLogin} />}
       <View style={styles.row}>
         <SecondaryButton styles={styles} label="Statistics" onPress={onStatistics} />
         <SecondaryButton styles={styles} label="Settings" onPress={onSettings} />
       </View>
+    </Screen>
+  );
+}
+
+function LoginScreen({ styles, backendUrl, setBackendUrl, onLogin, onResendVerification, onForgotPassword }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit() {
+    if (!email || (mode !== "verify" && !password)) {
+      setMessage("Email and password are required.");
+      return;
+    }
+    if ((mode === "verify" || mode === "reset") && verificationCode.length !== 6) {
+      setMessage("Enter the six-digit verification code.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await onLogin({ email, password, username, mode, verificationCode });
+      if (result?.requires_verification) {
+        setMode("verify");
+        setMessage(result.development_code ? `${result.message}\nDevelopment code: ${result.development_code}` : result.message);
+      }
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forgot() {
+    if (!email) {
+      setMessage("Enter your email first.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await onForgotPassword(email);
+      setMode("reset");
+      setMessage(result.development_code ? `${result.message}\nDevelopment code: ${result.development_code}` : result.message);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resend() {
+    if (!email) {
+      setMessage("Enter your email first.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await onResendVerification(email);
+      setMessage(result.development_code ? `${result.message}\nDevelopment code: ${result.development_code}` : result.message);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Screen styles={styles}>
+      <View style={styles.hero}>
+        <Text style={styles.kicker}>DECLARE</Text>
+        <Text style={styles.title}>{mode === "verify" ? "Verify email" : mode === "reset" ? "Reset password" : "Play together."}</Text>
+      </View>
+      {mode !== "verify" && mode !== "reset" && <View style={styles.segmentRow}>
+        <Pressable style={[styles.smallSegment, mode === "login" && styles.segmentActive]} onPress={() => { setMode("login"); setMessage(""); }}>
+          <Text style={styles.segmentText}>Login</Text>
+        </Pressable>
+        <Pressable style={[styles.smallSegment, mode === "signup" && styles.segmentActive]} onPress={() => { setMode("signup"); setMessage(""); }}>
+          <Text style={styles.segmentText}>Sign Up</Text>
+        </Pressable>
+      </View>}
+      <View style={styles.playerEditor}>
+        <Text style={styles.label}>Backend URL</Text>
+        <TextInput style={styles.input} value={backendUrl} autoCapitalize="none" placeholder="http://YOUR-PC-IP:8000" placeholderTextColor={styles.placeholder.color} onChangeText={setBackendUrl} />
+        {mode === "signup" && (
+          <>
+            <Text style={styles.label}>Username</Text>
+            <TextInput style={styles.input} value={username} autoCapitalize="words" placeholder="Your player name" placeholderTextColor={styles.placeholder.color} onChangeText={setUsername} />
+          </>
+        )}
+        <Text style={styles.label}>Email</Text>
+        <TextInput style={styles.input} value={email} keyboardType="email-address" autoCapitalize="none" placeholder="you@example.com" placeholderTextColor={styles.placeholder.color} onChangeText={setEmail} />
+        {mode === "verify" ? (
+          <>
+            <Text style={styles.label}>Verification code</Text>
+            <TextInput style={styles.input} value={verificationCode} keyboardType="number-pad" maxLength={6} placeholder="6-digit code" placeholderTextColor={styles.placeholder.color} onChangeText={setVerificationCode} />
+          </>
+        ) : (
+          <>
+            <Text style={styles.label}>Password</Text>
+            <View style={styles.passwordRow}>
+              <TextInput style={[styles.input, styles.passwordInput]} value={password} secureTextEntry={!showPassword} placeholder="Password or passphrase" placeholderTextColor={styles.placeholder.color} onChangeText={setPassword} />
+              <SecondaryButton styles={styles} label={showPassword ? "Hide" : "Show"} onPress={() => setShowPassword(!showPassword)} compact />
+            </View>
+            {(mode === "signup" || mode === "reset") && <Text style={styles.muted}>Use 15 to 128 characters. Common passwords are blocked; spaces and symbols are allowed.</Text>}
+            {mode === "reset" && <>
+              <Text style={styles.label}>Reset code</Text>
+              <TextInput style={styles.input} value={verificationCode} keyboardType="number-pad" maxLength={6} placeholder="6-digit code" placeholderTextColor={styles.placeholder.color} onChangeText={setVerificationCode} />
+            </>}
+          </>
+        )}
+        {message ? <Text style={styles.statusText}>{message}</Text> : null}
+      </View>
+      <PrimaryButton styles={styles} label={mode === "login" ? "Login" : mode === "signup" ? "Create Account" : mode === "verify" ? "Verify Email" : "Reset Password"} disabled={busy} onPress={submit} />
+      {mode === "verify" ? <SecondaryButton styles={styles} label="Resend Code" onPress={resend} /> : mode === "reset" ? <SecondaryButton styles={styles} label="Request Another Code" onPress={forgot} /> : <SecondaryButton styles={styles} label="Forgot Password" onPress={forgot} />}
     </Screen>
   );
 }
@@ -255,10 +518,11 @@ function SetupScreen({ styles, setup, setSetup, onBack, onStart }) {
   );
 }
 
-function GameplayScreen({ styles, match, selectedIds, onSelectCard, onDraw, onDiscard, onDeclare, onMenu }) {
+function GameplayScreen({ styles, match, localPlayerId, selectedIds, onSelectCard, onDraw, onDiscard, onDeclare, onMenu }) {
   const player = currentPlayer(match);
-  const hand = match.hands[player.id];
+  const hand = match.hands[localPlayerId || player.id] || [];
   const isHuman = player.type === "human";
+  const canInteract = isHuman && (!localPlayerId || player.id === localPlayerId);
   const drawn = match.turn.hasDrawn;
   const declareReady = canDeclare(match, player.id);
   const canDrawFromDrawPile = match.drawPile.length > 0 || match.discardPile.length > 1;
@@ -268,29 +532,29 @@ function GameplayScreen({ styles, match, selectedIds, onSelectCard, onDraw, onDi
       <TopBar styles={styles} title={`Round ${match.roundNumber}`} onBack={onMenu} />
       <View style={styles.statusBand}>
         <Text style={styles.statusTitle}>{player.name}'s turn</Text>
-        <Text style={styles.statusText}>{isHuman ? `Hand value ${handValue(hand)}` : "AI thinking"}</Text>
+        <Text style={styles.statusText}>{canInteract ? `Hand value ${handValue(hand)}` : `${player.name} is playing`}</Text>
       </View>
       <ScoreboardPanel styles={styles} match={match} />
       <View style={styles.piles}>
-        <Pile styles={styles} label="Draw" count={match.drawPile.length || "Mix"} onPress={() => onDraw("draw")} disabled={!isHuman || drawn || !canDrawFromDrawPile} />
+        <Pile styles={styles} label="Draw" count={match.drawPile.length || "Mix"} onPress={() => onDraw("draw")} disabled={!canInteract || drawn || !canDrawFromDrawPile} />
         <Pile
           styles={styles}
           label="Discard"
           count={match.discardPile.length}
           top={match.discardPile[match.discardPile.length - 1]}
           onPress={() => onDraw("discard")}
-          disabled={!isHuman || drawn || match.discardPile.length === 0}
+          disabled={!canInteract || drawn || match.discardPile.length === 0}
         />
       </View>
-      <Text style={styles.label}>Hand</Text>
+      <Text style={styles.label}>{localPlayerId ? "Your hand" : "Hand"}</Text>
       <View style={styles.handGrid}>
         {hand.map((card) => (
-          <CardButton key={card.id} styles={styles} card={card} selected={selectedIds.includes(card.id)} onPress={() => onSelectCard(card)} disabled={!isHuman} />
+          <CardButton key={card.id} styles={styles} card={card} selected={selectedIds.includes(card.id)} onPress={() => onSelectCard(card)} disabled={!canInteract} />
         ))}
       </View>
       <View style={styles.actionBar}>
-        <PrimaryButton styles={styles} label="Declare" disabled={!isHuman || !declareReady} onPress={onDeclare} />
-        <PrimaryButton styles={styles} label="Discard / End Turn" disabled={!isHuman || !drawn || selectedIds.length === 0} onPress={onDiscard} />
+        <PrimaryButton styles={styles} label="Declare" disabled={!canInteract || !declareReady} onPress={onDeclare} />
+        <PrimaryButton styles={styles} label="Discard / End Turn" disabled={!canInteract || !drawn || selectedIds.length === 0} onPress={onDiscard} />
       </View>
     </Screen>
   );
@@ -379,33 +643,105 @@ function SettingsScreen({ styles, settings, setSettings, onBack }) {
   );
 }
 
-function OnlineScreen({ styles, room, setRoom, onBack }) {
-  function createRoom(kind) {
-    setRoom({
-      code: Math.random().toString(36).slice(2, 8).toUpperCase(),
-      kind,
-      players: ["You"],
-      ready: false
-    });
+function OnlineScreen({ styles, user, authToken, backendUrl, setBackendUrl, room, setRoom, status, onBack, onConnectRoom, onStartMatch, onLogout }) {
+  const [joinCode, setJoinCode] = useState("");
+  const [maxPlayers, setMaxPlayers] = useState(4);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function createRoom() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${normalizeBackendUrl(backendUrl)}/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          host: onlinePlayer(user),
+          settings: { max_players: maxPlayers, public: false, ai_fill_empty_seats: false, turn_timer_seconds: 45, spectators_enabled: false }
+        })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Could not create room.");
+      setRoom(body);
+      onConnectRoom(body.code);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function joinRoom() {
+    if (!joinCode.trim()) {
+      setMessage("Enter a room code.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const code = joinCode.trim().toUpperCase();
+      const response = await fetch(`${normalizeBackendUrl(backendUrl)}/rooms/${code}/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ player: onlinePlayer(user) })
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Could not join room.");
+      setRoom(body);
+      onConnectRoom(body.code);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isHost = room?.host_id === user.id;
 
   return (
     <Screen styles={styles}>
       <TopBar styles={styles} title="Online Game" onBack={onBack} />
-      <PrimaryButton styles={styles} label="Quick Match" onPress={() => createRoom("Quick Match")} />
-      <PrimaryButton styles={styles} label="Create Room" onPress={() => createRoom("Private Room")} />
-      <PrimaryButton styles={styles} label="Join Room" onPress={() => createRoom("Joined Room")} />
-      <View style={styles.row}>
-        <SecondaryButton styles={styles} label="Friends" onPress={() => createRoom("Friends")} />
-        <SecondaryButton styles={styles} label="History" onPress={() => createRoom("History")} />
+      <View style={styles.statusBand}>
+        <Text style={styles.statusTitle}>Signed in as {user.username}</Text>
+        <Text style={styles.statusText}>{status || "Ready for remote play."}</Text>
       </View>
+      <View style={styles.playerEditor}>
+        <Text style={styles.label}>Backend URL</Text>
+        <TextInput style={styles.input} value={backendUrl} autoCapitalize="none" placeholder="http://YOUR-PC-IP:8000" placeholderTextColor={styles.placeholder.color} onChangeText={setBackendUrl} />
+        <Text style={styles.label}>Room size</Text>
+        <View style={styles.segmentRow}>
+          {[2, 3, 4, 5, 6].map((count) => (
+            <Pressable key={count} style={[styles.segment, maxPlayers === count && styles.segmentActive]} onPress={() => setMaxPlayers(count)}>
+              <Text style={styles.segmentText}>{count}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <PrimaryButton styles={styles} label="Create Room" disabled={busy} onPress={createRoom} />
+      </View>
+      <View style={styles.playerEditor}>
+        <Text style={styles.label}>Join Room Code</Text>
+        <TextInput style={styles.input} value={joinCode} autoCapitalize="characters" placeholder="AB12CD" placeholderTextColor={styles.placeholder.color} onChangeText={setJoinCode} />
+        <PrimaryButton styles={styles} label="Join Room" disabled={busy} onPress={joinRoom} />
+      </View>
+      {message ? <Text style={styles.statusText}>{message}</Text> : null}
       {room && (
         <View style={styles.statusBand}>
-          <Text style={styles.statusTitle}>{room.kind}</Text>
+          <Text style={styles.statusTitle}>Room {room.code}</Text>
+          <Text style={styles.statusText}>Share this code with your friends.</Text>
+          <View style={styles.scoreboardPanel}>
+            {room.players.map((player) => (
+              <View key={player.id} style={styles.scorecardRow}>
+                <Text style={styles.resultName}>{player.username}</Text>
+                <Text style={styles.resultScore}>{player.id === room.host_id ? "Host" : "Joined"}</Text>
+              </View>
+            ))}
+          </View>
           <Text style={styles.statusText}>ROOM CODE: {room.code}</Text>
-          <SecondaryButton styles={styles} label={room.ready ? "Ready" : "Mark Ready"} onPress={() => setRoom({ ...room, ready: !room.ready })} />
+          <PrimaryButton styles={styles} label="Start Remote Match" disabled={!isHost || room.players.length < 2} onPress={onStartMatch} />
         </View>
       )}
+      <SecondaryButton styles={styles} label="Logout" onPress={onLogout} />
     </Screen>
   );
 }
@@ -541,6 +877,25 @@ function formatDelta(value) {
   return value > 0 ? `+${value}` : String(value);
 }
 
+function normalizeBackendUrl(url) {
+  return (url || DEFAULT_BACKEND_URL).trim().replace(/\/+$/, "");
+}
+
+function httpToWs(url) {
+  const normalized = normalizeBackendUrl(url);
+  if (normalized.startsWith("https://")) return normalized.replace("https://", "wss://");
+  return normalized.replace("http://", "ws://");
+}
+
+function onlinePlayer(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    avatar: null,
+    ready: false
+  };
+}
+
 function makeTheme(dark) {
   return dark
     ? {
@@ -596,6 +951,8 @@ function createStyles(theme, largeCards) {
     segmentText: { color: theme.text, fontWeight: "800", letterSpacing: 0 },
     playerEditor: { gap: 8, padding: 12, backgroundColor: theme.panel, borderRadius: 8, borderWidth: 1, borderColor: theme.border },
     input: { minHeight: 44, borderRadius: 8, backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, color: theme.text, paddingHorizontal: 12, fontWeight: "700" },
+    passwordRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+    passwordInput: { flex: 1 },
     statusBand: { gap: 6, padding: 14, backgroundColor: theme.panel, borderRadius: 8, borderWidth: 1, borderColor: theme.border },
     statusTitle: { color: theme.text, fontSize: 20, fontWeight: "900", letterSpacing: 0 },
     statusText: { color: theme.muted, fontSize: 15, fontWeight: "700", letterSpacing: 0 },
