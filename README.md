@@ -43,7 +43,7 @@ For friends outside your Wi-Fi network, expose the backend with a public tunnel 
 
 The repository exports its FastAPI application from `main.py`, which Vercel detects automatically. Import `Sunny250389/declare_card-game` at [Vercel](https://vercel.com/new) and deploy from the repository root. Set the SMTP variables below in the Vercel project's Production environment.
 
-After Vercel gives you an HTTPS URL, add it as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel URL manually in the login screen while testing.
+After Vercel gives you an HTTPS URL, add it with `/api` as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel API URL manually in the login screen while testing.
 
 The current room, account, and WebSocket connection maps are stored in process memory. This is suitable for a local server but not a durable multi-instance Vercel deployment. Before relying on Vercel for remote multiplayer, move that shared state to Redis or another database and use a Vercel-compatible realtime transport.
 

@@ -39,6 +39,14 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def strip_vercel_api_prefix(request, call_next):
+    """Let the same FastAPI app run locally and behind Vercel's /api function path."""
+    if request.scope["path"].startswith("/api/"):
+        request.scope["path"] = request.scope["path"][4:]
+    return await call_next(request)
+
+
 class EventType(StrEnum):
     PLAYER_CONNECTED = "PlayerConnected"
     PLAYER_DISCONNECTED = "PlayerDisconnected"
