@@ -2,11 +2,6 @@
   "public": true,
   "buildCommand": "EXPO_PUBLIC_API_URL=/api npx expo export --platform web",
   "outputDirectory": "dist",
-  "functions": {
-    "api/index.py": {
-      "runtime": "python3.12"
-    }
-  },
   "rewrites": [
     {
       "source": "/api/(.*)",
