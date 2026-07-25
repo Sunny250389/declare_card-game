@@ -1,7 +1,7 @@
 {
   "public": true,
   "installCommand": "npm ci",
-  "buildCommand": "EXPO_PUBLIC_API_URL=/api npm exec expo export --platform web",
+  "buildCommand": "EXPO_PUBLIC_API_URL=/api npx --no-install expo export --platform web",
   "outputDirectory": "dist",
   "rewrites": [
     {
