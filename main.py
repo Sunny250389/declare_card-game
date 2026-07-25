@@ -228,6 +228,8 @@ def verification_response(user: StoredUser, code: str) -> VerificationResponse:
         delivered = False
     if delivered:
         return VerificationResponse(message="We emailed a six-digit verification code. It expires in 15 minutes.")
+    if not development_codes_allowed():
+        raise HTTPException(status_code=503, detail="Email delivery is not configured. Add SMTP settings before accepting account registrations.")
     return VerificationResponse(
         message="Email delivery is not configured. Use the development verification code shown below, or configure SMTP on the server.",
         development_code=code,
@@ -241,6 +243,10 @@ def issue_reset_code(user: StoredUser) -> str:
     return code
 
 
+def development_codes_allowed() -> bool:
+    return os.getenv("ALLOW_DEVELOPMENT_CODES", "").lower() == "true" or not os.getenv("VERCEL")
+
+
 def reset_response(user: StoredUser, code: str) -> CodeDeliveryResponse:
     try:
         delivered = send_email(user.email, "Reset your Declare password", f"Your Declare password reset code is {code}. It expires in 15 minutes.")
@@ -248,6 +254,8 @@ def reset_response(user: StoredUser, code: str) -> CodeDeliveryResponse:
         delivered = False
     if delivered:
         return CodeDeliveryResponse(message="We emailed a six-digit password reset code. It expires in 15 minutes.")
+    if not development_codes_allowed():
+        raise HTTPException(status_code=503, detail="Email delivery is not configured. Add SMTP settings before accepting password resets.")
     return CodeDeliveryResponse(
         message="Email delivery is not configured. Use the development reset code shown below, or configure SMTP on the server.",
         development_code=code,

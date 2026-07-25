@@ -39,6 +39,14 @@ http://YOUR-COMPUTER-IP:8000
 
 For friends outside your Wi-Fi network, expose the backend with a public tunnel or deploy it to a server, then use that public URL in the app.
 
+## Deploy the API with Vercel
+
+The repository exports its FastAPI application from `main.py`, which Vercel detects automatically. Import `Sunny250389/declare_card-game` at [Vercel](https://vercel.com/new) and deploy from the repository root. Set the SMTP variables below in the Vercel project's Production environment.
+
+After Vercel gives you an HTTPS URL, add it as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel URL manually in the login screen while testing.
+
+The current room, account, and WebSocket connection maps are stored in process memory. This is suitable for a local server but not a durable multi-instance Vercel deployment. Before relying on Vercel for remote multiplayer, move that shared state to Redis or another database and use a Vercel-compatible realtime transport.
+
 ## Accounts and email verification
 
 New accounts must verify a six-digit code before they can sign in. Passwords must be 15 to 128 characters; passphrases, spaces, and symbols are supported, while common passwords are rejected. Passwords are salted and hashed by the server.
@@ -54,7 +62,7 @@ $env:SMTP_PASSWORD = "smtp-password"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-When SMTP is not configured, the app displays a development-only code so you can test registration and password reset locally. Never use that fallback on a public deployment.
+When SMTP is not configured, the app displays a development-only code so you can test registration and password reset locally. Vercel disables this fallback by default; never enable `ALLOW_DEVELOPMENT_CODES` on a public deployment.
 
 ## Verify the engine
 
