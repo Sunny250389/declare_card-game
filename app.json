@@ -20,7 +20,7 @@
     },
     "extra": {
       "supports": ["ios", "android"],
-      "backend": "FastAPI WebSocket scaffold in main.py"
+      "backend": "FastAPI WebSocket scaffold in backend.py"
     }
   }
 }
