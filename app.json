@@ -5,6 +5,9 @@
     "version": "0.1.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",
+    "web": {
+      "bundler": "metro"
+    },
     "splash": {
       "backgroundColor": "#0f172a"
     },
