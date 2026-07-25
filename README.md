@@ -28,7 +28,7 @@ Start the backend so phones on your network can reach it:
 
 ```bash
 pip install -r requirements.txt
-uvicorn backend:app --host 0.0.0.0 --port 8000
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
 Find your computer's local IP address, then enter this in the app login screen:
@@ -41,7 +41,7 @@ For friends outside your Wi-Fi network, expose the backend with a public tunnel 
 
 ## Deploy the API with Vercel
 
-The repository exports its FastAPI application from `api/index.py`, which Vercel detects automatically. Import `Sunny250389/declare_card-game` at [Vercel](https://vercel.com/new) and deploy from the repository root. Set the SMTP variables below in the Vercel project's Production environment.
+Vercel deploys the Expo web game from the repository root. Deploy the `backend` directory as a separate FastAPI Vercel project, then configure that API URL in the Expo build environment. Set the SMTP variables below in the API project's Production environment.
 
 After Vercel gives you an HTTPS URL, add it with `/api` as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel API URL manually in the login screen while testing.
 
@@ -59,7 +59,7 @@ $env:SMTP_PORT = "587"
 $env:SMTP_FROM = "no-reply@example.com"
 $env:SMTP_USERNAME = "smtp-user"
 $env:SMTP_PASSWORD = "smtp-password"
-uvicorn backend:app --host 0.0.0.0 --port 8000
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
 When SMTP is not configured, the app displays a development-only code so you can test registration and password reset locally. Vercel disables this fallback by default; never enable `ALLOW_DEVELOPMENT_CODES` on a public deployment.
@@ -72,9 +72,9 @@ npm run test:engine
 
 ## Online backend scaffold
 
-The local backend entry point is `backend.py`.
+The local backend entry point is `backend/app.py`.
 
 ```bash
 pip install -r requirements.txt
-uvicorn backend:app --reload
+uvicorn backend.app:app --reload
 ```

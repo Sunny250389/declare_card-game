@@ -31,7 +31,7 @@ import { playUntilHumanTurn } from "./src/engine/ai";
 const SAVE_KEY = "declare.savedMatch.v1";
 const USER_KEY = "declare.user.v1";
 const BACKEND_KEY = "declare.backendUrl.v1";
-const DEFAULT_BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || "https://declarecard-game.vercel.app/api";
+const DEFAULT_BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || "https://declare-card-game-api.vercel.app";
 
 const baseSetup = {
   numberOfPlayers: 4,

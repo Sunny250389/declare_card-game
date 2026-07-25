@@ -1,0 +1,10 @@
+{
+  "public": true,
+  "buildCommand": "echo Building FastAPI",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/app.py"
+    }
+  ]
+}

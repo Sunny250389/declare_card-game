@@ -1,14 +1,10 @@
 {
   "public": true,
-  "buildCommand": "npm ci && EXPO_PUBLIC_API_URL=/api npx --no-install expo export --platform web",
+  "buildCommand": "npm ci && EXPO_PUBLIC_API_URL=https://declare-card-game-api.vercel.app npx --no-install expo export --platform web",
   "outputDirectory": "dist",
   "routes": [
     {
       "handle": "filesystem"
-    },
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
     },
     {
       "src": "/(.*)",
