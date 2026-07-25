@@ -1,0 +1,9 @@
+backend/
+__pycache__/
+*.pyc
+.expo/
+dist/
+web-build/
+coverage/
+.env
+.env.*

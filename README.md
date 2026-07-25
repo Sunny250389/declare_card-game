@@ -41,7 +41,7 @@ For friends outside your Wi-Fi network, expose the backend with a public tunnel 
 
 ## Deploy the API with Vercel
 
-Vercel deploys the Expo web game from the repository root. Deploy the `backend` directory as a separate FastAPI Vercel project, then configure that API URL in the Expo build environment. Set the SMTP variables below in the API project's Production environment.
+Vercel deploys the Expo web game from the repository root. In Vercel, use the **Other** framework preset and set `EXPO_PUBLIC_API_URL` to the separately hosted backend URL. The `backend` directory is excluded from the frontend deployment.
 
 After Vercel gives you an HTTPS URL, add it with `/api` as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel API URL manually in the login screen while testing.
 
