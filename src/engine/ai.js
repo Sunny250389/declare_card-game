@@ -1,4 +1,4 @@
-const { canDeclare, declareRound, discardCards, drawCard, handValue } = require("./gameEngine");
+import { canDeclare, declareRound, discardCards, drawCard, handValue } from "./gameEngine.js";
 
 function shouldDeclare(state, player) {
   const value = handValue(state.hands[player.id]);
@@ -91,7 +91,7 @@ function hasAllSameOrPair(hand) {
   return [...groupByRank(hand).values()].some((cards) => cards.length > 1);
 }
 
-module.exports = {
+export {
   chooseDiscardIds,
   chooseDrawSource,
   playAITurn,

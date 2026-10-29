@@ -1,4 +1,4 @@
-const rules = require("../../shared/rules.json");
+import rules from "../../shared/rules.json";
 
 const SUITS = rules.suits;
 const RANKS = rules.ranks;
@@ -53,7 +53,7 @@ function cardLabel(card) {
   return `${card.rank}${suit}`;
 }
 
-module.exports = {
+export {
   SUITS,
   RANKS,
   cardLabel,

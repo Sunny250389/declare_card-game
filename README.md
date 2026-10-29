@@ -1,73 +1,104 @@
 # Declare
 
-Declare is a cross-platform iOS, Android, and web card game built with Expo React Native.
+Declare is a card game for two to six players: lowest hand wins, and a match ends at 100 points. It runs in any
+modern browser and installs to your home screen on Android and iPhone, with no app store needed.
 
-## What is included
+## Features
 
-- Local pass-and-play match flow for 2-6 players, with human and AI players (easy, medium, hard).
-- Full rule engine for draw, discard, declare, round scoring, same-rank bonus, and match end at 100 points.
-- Online rooms that work over the internet: share a six-character room code and anyone with the app can join.
-- Server-authoritative online play: every device receives only its own cards during a match.
-- Accounts with email verification, login protection, password reset, and session restore.
+- Play on one device against AI players (easy, medium, hard), or with friends online.
+- Online rooms with a shareable six-character code. Each device sees only its own cards.
+- Accounts with email verification, sign-in protection, password reset, and sessions that stay signed in.
+- An unfinished local match can be resumed. Each account keeps its own.
+- Works offline for the app itself once it has been opened once (installed app only).
+
+## How to play
+
+Each turn has two steps:
+
+1. **Discard** one or more cards of the same rank. The turn does not end yet.
+2. **Pick up** one card, either from the draw pile or the card that was on top of the discard pile before your discard.
+   Picking up ends your turn.
+
+A round starts with one card already on the discard pile. Before you discard, you may **declare** if your hand is 15
+points or less. A declare ends the round and scores it:
+
+- Someone with a lower hand: you score 50 and they score 0.
+- A tie: you score double your hand, and the tied players score 0.
+- Your hand is all one rank: you score -25.
+- Otherwise: you score 0 and everyone else scores their hand value.
 
 ## Architecture
 
 | Part | Location | Notes |
 | --- | --- | --- |
-| Mobile and web app | `App.js`, `src/engine/` | Expo SDK 54. Local games run entirely on the device. |
-| Shared rules | `shared/rules.json` | Limits, ranks, and suits. Read by both the JS engine and the backend. |
-| Online backend | `backend/app.py`, `backend/store.py` | FastAPI with WebSockets. Accounts, rooms, and matches are stored in SQLite. |
-| Container | `Dockerfile` | Runs the backend on any host with a persistent volume (Render, Railway, Fly.io, a VPS). |
+| Web app (PWA) | `src/`, `index.html`, `public/` | React and Vite. Installable, with an offline app shell. |
+| Game rules | `src/engine/` | Pure JavaScript, no framework. Used by the app and the tests. |
+| Shared rules | `shared/rules.json` | Limits, ranks, and suits. Read by the JavaScript engine and the Python backend. |
+| Online backend | `backend/app.py`, `backend/store.py`, `backend/mailer.py` | FastAPI with WebSockets. Data in SQLite. |
+| Container | `Dockerfile` | Runs the backend on any host with a persistent volume. |
 
-The backend must run as a long-lived service, because online rooms use WebSocket connections that serverless hosts
-cannot keep open. The web build is a static site and can be hosted on any static host.
+The backend keeps rooms in memory on a single process, so it must run as one long-lived service. Serverless hosts
+cannot keep the WebSocket connections that rooms need.
 
-## Run the app locally
+## Run the app on this computer
 
 ```bash
 npm install
-npm start
+npm run dev
 ```
 
-Open the app with Expo on iOS or Android, or press `w` for the web version.
+Open http://localhost:5173. The app reaches the backend on port 8000 of the same host.
 
-## Run the backend locally
+## Run the backend
 
 ```bash
 pip install -r backend/requirements.txt
 python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-Point the app at `http://localhost:8000` (web) or `http://YOUR-COMPUTER-IP:8000` (phone on the same Wi-Fi).
-Without SMTP configured, codes are only shown in the app when `ALLOW_DEVELOPMENT_CODES=true`.
+Without email set up, codes are shown on screen only when `ALLOW_DEVELOPMENT_CODES=true`.
 
-## Deploy the backend so anyone can join
+## Use it on a phone on the same Wi-Fi
 
-1. Deploy from this repository with the root `Dockerfile` (on Render, Railway, or Fly.io, choose "Docker").
-2. Add a persistent volume mounted at `/data`. The database lives at `/data/declare.sqlite3`.
-3. Set environment variables from `.env.example`: at minimum the `SMTP_*` settings. Leave `ALLOW_DEVELOPMENT_CODES` unset.
-4. Check `https://YOUR-BACKEND/health` returns `{"status":"ok"}`.
+1. Start the backend and the web app on this computer. `npm run dev` already listens on all network addresses.
+2. Allow inbound connections on ports 5173 and 8000 in Windows Firewall. Set the Wi-Fi to **Private** first, or add a rule
+   for the Private profile.
+3. On the phone, open `http://YOUR-COMPUTER-IP:5173`. The app uses `http://YOUR-COMPUTER-IP:8000` for the backend.
 
-Run only one backend instance. Rooms and WebSocket connections are held by the process that owns them, so
-scaling out to several instances needs a shared message bus (for example Redis pub/sub) first.
+Installing to the home screen needs a secure connection (HTTPS), so for a permanent install, host the app (see below).
 
-## Deploy the web app
+- **Android (Chrome):** menu → **Install app**.
+- **iPhone (Safari):** share button → **Add to Home Screen**.
 
-1. Set `EXPO_PUBLIC_API_URL` to your backend URL (for example `https://declare-api.example.com`), then build with `npx expo export --platform web`. The output goes to `dist`.
-2. Upload `dist` to any static host. The app will reach your backend from any network.
+## Install on a phone from a hosted site
 
-For mobile builds, set `EXPO_PUBLIC_API_URL` in your EAS production environment and publish a new build.
-Players can also type the server URL on the login screen.
+Host the built app over HTTPS, then open that address in Chrome or Safari and use the install steps above.
+
+```bash
+VITE_API_URL=https://your-backend.example.com npm run build
+```
+
+This creates `dist/`. Upload it to any static host (for example Netlify, Cloudflare Pages, GitHub Pages, or your own server).
+`VITE_API_URL` must point to the public HTTPS address of the backend, because it is built into the app.
+
+## Tests
+
+```bash
+npm test                  # engine rules, helpers, and component tests (Vitest)
+npm run test:backend      # backend API, rooms over WebSocket, and email (pytest)
+```
 
 ## Set up email
 
-Verification and password-reset codes are sent by email. Any SMTP provider works (Gmail, Brevo, Mailgun, Amazon SES, SendGrid, and others). Set the `SMTP_*` variables from `.env.example` on the backend server, then check them before going live:
+Verification and password-reset codes are sent by email. Any SMTP provider works (Gmail, Brevo, Mailgun, Amazon SES,
+SendGrid, and others). Set the `SMTP_*` variables from `.env.example` on the backend server, then check them:
 
 ```bash
-python -m backend.send_test you@example.com
+python D:\Projects\declare_card-game\backend\send_test.py you@example.com
 ```
 
-It prints either the successful send or the exact reason it failed, such as a rejected login. Gmail needs an app password, not your normal password.
+It prints either the successful send or the exact reason it failed, such as a rejected login. Gmail needs an app
+password, not your normal password.
 
 ## Accounts
 
@@ -83,14 +114,11 @@ It prints either the successful send or the exact reason it failed, such as a re
 - If the host leaves, the next player becomes host. The room is removed when the last player leaves.
 - Reconnecting after a dropped connection restores the current state automatically.
 
-## Verify the engine
+## Deploy the backend
 
-```bash
-npm run test:engine
-```
+1. Deploy the root `Dockerfile` on Render, Railway, or Fly.io.
+2. Add a persistent volume mounted at `/data`. The database lives at `/data/declare.sqlite3`.
+3. Set the environment variables from `.env.example`, at minimum the `SMTP_*` settings. Leave `ALLOW_DEVELOPMENT_CODES` unset.
+4. Check that `https://YOUR-BACKEND/health` returns `{"status":"ok"}`.
 
-## Run backend tests
-
-```bash
-python -m pytest backend/tests -q
-```
+Run only one backend instance. Rooms and WebSocket connections are held by the process that owns them.

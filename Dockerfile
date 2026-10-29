@@ -1,4 +1,4 @@
-# Online backend (rooms, accounts, WebSockets). The Expo web/mobile app is not part of this image.
+# Online backend (rooms, accounts, WebSockets). The web app is built separately with npm run build.
 # Build and run from the repository root:
 #   docker build -t declare-backend .
 #   docker run -p 8000:8000 -v declare-data:/data --env-file .env declare-backend

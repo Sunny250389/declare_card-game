@@ -1,5 +1,5 @@
-const { createDeck, shuffle } = require("./cards");
-const rules = require("../../shared/rules.json");
+import { createDeck, shuffle } from "./cards.js";
+import rules from "../../shared/rules.json";
 
 const MATCH_LIMIT = rules.match_limit;
 const DECLARE_LIMIT = rules.declare_limit;
@@ -322,7 +322,7 @@ function finalLeaderboard(state) {
   return [...state.players].sort((a, b) => a.totalScore - b.totalScore);
 }
 
-module.exports = {
+export {
   DECLARE_LIMIT,
   MATCH_LIMIT,
   allSameRank,
