@@ -5,6 +5,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Switch,
@@ -31,7 +32,12 @@ import { playUntilHumanTurn } from "./src/engine/ai";
 const SAVE_KEY = "declare.savedMatch.v1";
 const USER_KEY = "declare.user.v1";
 const BACKEND_KEY = "declare.backendUrl.v1";
-const DEFAULT_BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || "https://declare-card-game-api.vercel.app";
+// Set EXPO_PUBLIC_API_URL at build time (for example https://declare-api.onrender.com).
+// Without it, players type the server URL on the login screen.
+const DEFAULT_BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || "";
+const REQUEST_TIMEOUT_MS = 15000;
+const PING_INTERVAL_MS = 25000;
+const MAX_RECONNECT_ATTEMPTS = 6;
 
 const baseSetup = {
   numberOfPlayers: 4,
@@ -40,8 +46,87 @@ const baseSetup = {
   difficulties: ["medium", "medium", "medium", "hard", "easy", "medium"]
 };
 
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// Every server call goes through here so timeouts, network failures, and non-JSON
+// responses all produce a readable message instead of a raw parser error.
+async function apiRequest(baseUrl, path, { method = "GET", token, body } = {}) {
+  if (!baseUrl) throw new ApiError("Enter the server URL first.", 0);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal
+    });
+  } catch (error) {
+    const message = error?.name === "AbortError"
+      ? "The server took too long to respond. Check the server URL and try again."
+      : "Could not reach the server. Check the server URL and your internet connection.";
+    throw new ApiError(message, 0);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+  }
+  if (!response.ok) throw new ApiError(errorMessage(data, response.status), response.status);
+  return data;
+}
+
+function errorMessage(data, status) {
+  if (typeof data.detail === "string") return data.detail;
+  if (Array.isArray(data.detail)) return data.detail.map((item) => item.msg).join(" ");
+  if (status === 404) return "That server address did not respond like a Declare server. Check the server URL.";
+  if (status === 429) return "Too many requests. Wait a moment and try again.";
+  return `The server returned an error (${status}). Try again.`;
+}
+
+function isValidServerUrl(url) {
+  return /^https?:\/\/[^\s/]+/i.test(url);
+}
+
+// Only an unfinished local match can be resumed. Finished matches and online matches are never offered.
+function resumableMatch(raw) {
+  if (!raw) return null;
+  try {
+    const saved = JSON.parse(raw);
+    return saved && saved.mode !== "online" && saved.status !== "matchResult" ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredSession(raw) {
+  if (!raw) return null;
+  try {
+    const saved = JSON.parse(raw);
+    return saved.user && saved.token ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
-  const [screen, setScreen] = useState("login");
+  const [screen, setScreen] = useState("welcome");
   const [setup, setSetup] = useState(baseSetup);
   const [match, setMatch] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -54,30 +139,40 @@ export default function App() {
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [onlineStatus, setOnlineStatus] = useState("");
   const roomSocketRef = useRef(null);
+  const roomCodeRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const pingTimerRef = useRef(null);
 
+  // Each account keeps its own unfinished local match. Guests share one slot on this device.
+  const savedKey = authUser ? `${SAVE_KEY}.${authUser.id}` : SAVE_KEY;
   const theme = useMemo(() => makeTheme(settings.darkMode), [settings.darkMode]);
   const styles = useMemo(() => createStyles(theme, settings.largeCards), [theme, settings.largeCards]);
 
   useEffect(() => {
-    AsyncStorage.getItem(SAVE_KEY).then((value) => setSavedAvailable(Boolean(value)));
-    AsyncStorage.getItem(USER_KEY).then((value) => {
-      if (!value) return;
-      const saved = JSON.parse(value);
-      if (saved.user && saved.token) {
-        setAuthUser(saved.user);
-        setAuthToken(saved.token);
-        setScreen("home");
-      }
+    AsyncStorage.getItem(savedKey).then((value) => {
+      const saved = resumableMatch(value);
+      setSavedAvailable(Boolean(saved));
+      if (value && !saved) AsyncStorage.removeItem(savedKey);
     });
+  }, [savedKey]);
+
+  useEffect(() => {
     AsyncStorage.getItem(BACKEND_KEY).then((value) => {
       if (value) setBackendUrl(value);
     });
+    restoreSession();
+    return () => closeRoomSocket();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!match) return;
-    AsyncStorage.setItem(SAVE_KEY, JSON.stringify(match)).then(() => setSavedAvailable(true));
-  }, [match]);
+    if (!match || match.mode === "online") return;
+    if (match.status === "matchResult") {
+      AsyncStorage.removeItem(savedKey).then(() => setSavedAvailable(false));
+      return;
+    }
+    AsyncStorage.setItem(savedKey, JSON.stringify(match)).then(() => setSavedAvailable(true));
+  }, [match, savedKey]);
 
   useEffect(() => {
     if (!match || screen !== "gameplay" || match.status !== "playing") return undefined;
@@ -107,69 +202,140 @@ export default function App() {
     setScreen("gameplay");
   }
 
-  async function loginOnline({ email, password, username, mode, verificationCode }) {
-    const normalizedUrl = normalizeBackendUrl(backendUrl);
-    setBackendUrl(normalizedUrl);
-    await AsyncStorage.setItem(BACKEND_KEY, normalizedUrl);
-    const path = mode === "signup" ? "/auth/signup" : mode === "verify" ? "/auth/verify-email" : mode === "reset" ? "/auth/reset-password" : "/auth/login";
-    const payload = mode === "verify" ? { email, code: verificationCode } : mode === "reset" ? { email, code: verificationCode, password } : { email, password, username };
-    const response = await fetch(`${normalizedUrl}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || "Login failed.");
-    if (body.requires_verification) return body;
-    setAuthUser(body.user);
-    setAuthToken(body.token);
-    await AsyncStorage.setItem(USER_KEY, JSON.stringify({ user: body.user, token: body.token }));
-    setScreen("home");
-    return body;
+  async function rememberServerUrl(value) {
+    const url = normalizeBackendUrl(value);
+    if (!isValidServerUrl(url)) {
+      throw new ApiError("Enter a server URL that starts with https:// (or http:// on your local network).", 0);
+    }
+    setBackendUrl(url);
+    await AsyncStorage.setItem(BACKEND_KEY, url);
+    return url;
   }
 
-  async function resendVerification(email) {
-    const response = await fetch(`${normalizeBackendUrl(backendUrl)}/auth/resend-verification`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || "Unable to resend verification code.");
-    return body;
+  async function saveSession(session) {
+    setMatch(null);
+    setAuthUser(session.user);
+    setAuthToken(session.token);
+    await AsyncStorage.setItem(USER_KEY, JSON.stringify({ user: session.user, token: session.token }));
   }
 
-  async function forgotPassword(email) {
-    const normalizedUrl = normalizeBackendUrl(backendUrl);
-    const response = await fetch(`${normalizedUrl}/auth/forgot-password`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || "Unable to reset password.");
-    return body;
-  }
-
-  async function logoutOnline() {
-    if (roomSocketRef.current) roomSocketRef.current.close();
-    roomSocketRef.current = null;
+  async function clearSession() {
+    closeRoomSocket();
     setAuthUser(null);
     setAuthToken(null);
     setOnlineRoom(null);
+    setOnlineStatus("");
+    setMatch(null);
     await AsyncStorage.removeItem(USER_KEY);
+  }
+
+  // On launch, check the saved token with the server. Only a rejected token signs the player out;
+  // a network failure keeps the session so the player can try again later.
+  async function restoreSession() {
+    const [rawSession, savedUrl] = await Promise.all([AsyncStorage.getItem(USER_KEY), AsyncStorage.getItem(BACKEND_KEY)]);
+    const saved = parseStoredSession(rawSession);
+    if (!saved) return;
+    setAuthUser(saved.user);
+    setAuthToken(saved.token);
+    setScreen("home");
+    try {
+      const user = await apiRequest(normalizeBackendUrl(savedUrl || DEFAULT_BACKEND_URL), "/auth/me", { token: saved.token });
+      await saveSession({ user, token: saved.token });
+    } catch (error) {
+      if (error.status === 401) await clearSession();
+    }
+  }
+
+  async function loginOnline({ email, password, username, mode, verificationCode }) {
+    const baseUrl = await rememberServerUrl(backendUrl);
+    const path = mode === "signup" ? "/auth/signup" : mode === "verify" ? "/auth/verify-email" : mode === "reset" ? "/auth/reset-password" : "/auth/login";
+    const body = mode === "verify" ? { email, code: verificationCode } : mode === "reset" ? { email, code: verificationCode, password } : { email, password, username };
+    const result = await apiRequest(baseUrl, path, { method: "POST", body });
+    if (result.requires_verification) return result;
+    await saveSession(result);
+    setScreen("home");
+    return result;
+  }
+
+  function resendVerification(email) {
+    return apiRequest(normalizeBackendUrl(backendUrl), "/auth/resend-verification", { method: "POST", body: { email } });
+  }
+
+  function forgotPassword(email) {
+    return apiRequest(normalizeBackendUrl(backendUrl), "/auth/forgot-password", { method: "POST", body: { email } });
+  }
+
+  async function logoutOnline() {
+    const url = normalizeBackendUrl(backendUrl);
+    if (authToken && isValidServerUrl(url)) {
+      // Signing out locally matters more than the server call, so ignore failures here.
+      apiRequest(url, "/auth/logout", { method: "POST", token: authToken }).catch(() => {});
+    }
+    await clearSession();
     setScreen("home");
   }
 
+  function closeRoomSocket() {
+    clearTimeout(reconnectTimerRef.current);
+    clearInterval(pingTimerRef.current);
+    reconnectTimerRef.current = null;
+    pingTimerRef.current = null;
+    roomCodeRef.current = null;
+    const socket = roomSocketRef.current;
+    roomSocketRef.current = null;
+    if (socket) socket.close();
+  }
+
   function connectRoomSocket(roomCode) {
-    if (roomSocketRef.current) roomSocketRef.current.close();
+    closeRoomSocket();
+    roomCodeRef.current = roomCode;
+    openRoomSocket(roomCode, 0);
+  }
+
+  function openRoomSocket(roomCode, attempt) {
     const socket = new WebSocket(`${httpToWs(normalizeBackendUrl(backendUrl))}/ws/rooms/${roomCode}?token=${encodeURIComponent(authToken || "")}`);
     roomSocketRef.current = socket;
-    socket.onopen = () => setOnlineStatus("Connected to room.");
-    socket.onerror = () => setOnlineStatus("Connection problem. Check the backend URL and Wi-Fi.");
-    socket.onclose = () => setOnlineStatus("Disconnected from room.");
+    socket.onopen = () => {
+      setOnlineStatus("Connected to room.");
+      clearInterval(pingTimerRef.current);
+      pingTimerRef.current = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "Ping", payload: {} }));
+      }, PING_INTERVAL_MS);
+    };
+    socket.onerror = () => setOnlineStatus("Connection problem. Retrying...");
+    socket.onclose = (event) => {
+      // Ignore close events from sockets we already replaced or closed on purpose.
+      if (roomSocketRef.current !== socket) return;
+      clearInterval(pingTimerRef.current);
+      roomSocketRef.current = null;
+      if (!roomCodeRef.current) return;
+      // 1000: the server closed this socket on purpose (for example after leaving the room).
+      if (event.code === 1000) {
+        roomCodeRef.current = null;
+        setOnlineStatus("Disconnected from room.");
+        return;
+      }
+      if (event.code === 1008) {
+        roomCodeRef.current = null;
+        setOnlineStatus("You are no longer in this room. Rejoin with the room code.");
+        return;
+      }
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        roomCodeRef.current = null;
+        setOnlineStatus("Disconnected from room. Rejoin with the room code.");
+        return;
+      }
+      setOnlineStatus("Connection lost. Reconnecting...");
+      reconnectTimerRef.current = setTimeout(() => openRoomSocket(roomCode, attempt + 1), Math.min(1500 * (attempt + 1), 8000));
+    };
     socket.onmessage = (message) => {
-      const event = JSON.parse(message.data);
+      let event;
+      try {
+        event = JSON.parse(message.data);
+      } catch {
+        return;
+      }
+      if (event.type === "Pong") return;
       if (event.type === "Snapshot") {
         setOnlineRoom(event.payload.room);
         if (event.payload.match) {
@@ -178,6 +344,9 @@ export default function App() {
         }
       }
       if (event.type === "RoomJoined" && event.payload.room) {
+        setOnlineRoom(event.payload.room);
+      }
+      if (event.type === "RoomLeft" && event.payload.room) {
         setOnlineRoom(event.payload.room);
       }
       if ((event.type === "GameStarted" || event.type === "GameStateSynced") && event.payload.match) {
@@ -190,7 +359,10 @@ export default function App() {
   }
 
   function sendOnlineAction(type, payload = {}) {
-    if (!roomSocketRef.current || roomSocketRef.current.readyState !== WebSocket.OPEN || !onlineRoom) return;
+    if (!roomSocketRef.current || roomSocketRef.current.readyState !== WebSocket.OPEN || !onlineRoom) {
+      Alert.alert("Not connected", "Reconnecting to the room. Try again in a moment.");
+      return;
+    }
     roomSocketRef.current.send(JSON.stringify({
       type,
       payload
@@ -202,13 +374,29 @@ export default function App() {
     sendOnlineAction("GameStarted");
   }
 
+  async function leaveRoom() {
+    if (!onlineRoom) return;
+    try {
+      await apiRequest(normalizeBackendUrl(backendUrl), `/rooms/${onlineRoom.code}/leave`, { method: "POST", token: authToken });
+    } catch (error) {
+      Alert.alert("Could not leave the room", error.message);
+      return;
+    }
+    closeRoomSocket();
+    if (match?.mode === "online") setMatch(null);
+    setOnlineRoom(null);
+    setOnlineStatus("You left the room.");
+  }
+
   async function resumeMatch() {
-    const saved = await AsyncStorage.getItem(SAVE_KEY);
-    if (!saved) return;
-    const parsed = JSON.parse(saved);
+    const parsed = resumableMatch(await AsyncStorage.getItem(savedKey));
+    if (!parsed) {
+      setSavedAvailable(false);
+      return;
+    }
     setMatch(parsed);
     setSelectedIds([]);
-    setScreen(parsed.status === "roundResult" ? "roundResult" : parsed.status === "matchResult" ? "matchResult" : "gameplay");
+    setScreen(parsed.status === "roundResult" ? "roundResult" : "gameplay");
   }
 
   function updateMatchWith(action) {
@@ -247,10 +435,12 @@ export default function App() {
         onOnline={() => setScreen("online")}
         user={authUser}
         onLogin={() => setScreen("login")}
+        onLogout={logoutOnline}
       />
     ),
     setup: <SetupScreen styles={styles} setup={setup} setSetup={setSetup} onBack={() => setScreen("home")} onStart={startMatch} />,
-    login: <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} />,
+    welcome: <WelcomeScreen styles={styles} onLogin={() => setScreen("login")} onPlayWithoutAccount={() => setScreen("home")} />,
+    login: <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} onBack={() => setScreen("welcome")} />,
     gameplay: match && (
       <GameplayScreen
         styles={styles}
@@ -296,10 +486,12 @@ export default function App() {
         onBack={() => setScreen("home")}
         onConnectRoom={connectRoomSocket}
         onStartMatch={startOnlineMatch}
+        onLeaveRoom={leaveRoom}
+        onSessionExpired={clearSession}
         onLogout={logoutOnline}
       />
     ) : (
-      <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} />
+      <LoginScreen styles={styles} backendUrl={backendUrl} setBackendUrl={setBackendUrl} onLogin={loginOnline} onResendVerification={resendVerification} onForgotPassword={forgotPassword} onBack={() => setScreen("welcome")} />
     )
   }[screen];
 
@@ -313,7 +505,21 @@ export default function App() {
   );
 }
 
-function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics, onSettings, onOnline, user, onLogin }) {
+function WelcomeScreen({ styles, onLogin, onPlayWithoutAccount }) {
+  return (
+    <Screen styles={styles}>
+      <View style={styles.hero}>
+        <Text style={styles.kicker}>DECLARE</Text>
+        <Text style={styles.title}>Lowest hand wins.</Text>
+        <Text style={styles.muted}>Sign in to play online with friends, or play on this device without an account.</Text>
+      </View>
+      <PrimaryButton styles={styles} label="Login or Sign Up" onPress={onLogin} />
+      <SecondaryButton styles={styles} label="Play without account" onPress={onPlayWithoutAccount} />
+    </Screen>
+  );
+}
+
+function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics, onSettings, onOnline, user, onLogin, onLogout }) {
   return (
     <Screen styles={styles}>
       <View style={styles.hero}>
@@ -322,8 +528,9 @@ function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics,
         <Text style={styles.muted}>{user ? `Signed in as ${user.username}` : "Sign in to play online."}</Text>
       </View>
       <PrimaryButton styles={styles} label="New Game" onPress={onNewGame} />
-      <PrimaryButton styles={styles} label="Resume Match" disabled={!savedAvailable} onPress={onResume} />
+      {savedAvailable ? <PrimaryButton styles={styles} label="Resume Match" onPress={onResume} /> : null}
       {user ? <PrimaryButton styles={styles} label="Online Game" onPress={onOnline} /> : <PrimaryButton styles={styles} label="Login" onPress={onLogin} />}
+      {user ? <SecondaryButton styles={styles} label="Log out" onPress={onLogout} /> : null}
       <View style={styles.row}>
         <SecondaryButton styles={styles} label="Statistics" onPress={onStatistics} />
         <SecondaryButton styles={styles} label="Settings" onPress={onSettings} />
@@ -332,7 +539,7 @@ function HomeScreen({ styles, savedAvailable, onNewGame, onResume, onStatistics,
   );
 }
 
-function LoginScreen({ styles, backendUrl, setBackendUrl, onLogin, onResendVerification, onForgotPassword }) {
+function LoginScreen({ styles, backendUrl, setBackendUrl, onLogin, onResendVerification, onForgotPassword, onBack }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
@@ -343,24 +550,39 @@ function LoginScreen({ styles, backendUrl, setBackendUrl, onLogin, onResendVerif
   const [message, setMessage] = useState("");
 
   async function submit() {
-    if (!email || (mode !== "verify" && !password)) {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || (mode !== "verify" && !password)) {
       setMessage("Email and password are required.");
       return;
     }
-    if ((mode === "verify" || mode === "reset") && verificationCode.length !== 6) {
-      setMessage("Enter the six-digit verification code.");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) {
+      setMessage("Enter a valid email address.");
+      return;
+    }
+    if (mode === "signup" && password.length < 15) {
+      setMessage("Use a password or passphrase with at least 15 characters.");
+      return;
+    }
+    if ((mode === "verify" || mode === "reset") && !/^\d{6}$/.test(verificationCode)) {
+      setMessage("Enter the six-digit code from your email.");
       return;
     }
     setBusy(true);
     setMessage("");
     try {
-      const result = await onLogin({ email, password, username, mode, verificationCode });
+      const result = await onLogin({ email: cleanEmail, password, username: username.trim(), mode, verificationCode });
       if (result?.requires_verification) {
         setMode("verify");
         setMessage(result.development_code ? `${result.message}\nDevelopment code: ${result.development_code}` : result.message);
       }
     } catch (error) {
-      setMessage(error.message);
+      // The server rejects sign-in until the email is verified. Take the player to the code step.
+      if (error.status === 403 && mode === "login") {
+        setMode("verify");
+        setMessage("Your email is not verified yet. Enter the code we sent, or request a new one.");
+      } else {
+        setMessage(error.message);
+      }
     } finally {
       setBusy(false);
     }
@@ -449,6 +671,8 @@ function LoginScreen({ styles, backendUrl, setBackendUrl, onLogin, onResendVerif
       </View>
       <PrimaryButton styles={styles} label={mode === "login" ? "Login" : mode === "signup" ? "Create Account" : mode === "verify" ? "Verify Email" : "Reset Password"} disabled={busy} onPress={submit} />
       {mode === "verify" ? <SecondaryButton styles={styles} label="Resend Code" onPress={resend} /> : mode === "reset" ? <SecondaryButton styles={styles} label="Request Another Code" onPress={forgot} /> : <SecondaryButton styles={styles} label="Forgot Password" onPress={forgot} />}
+      {(mode === "verify" || mode === "reset") && <SecondaryButton styles={styles} label="Back to login" onPress={() => { setMode("login"); setMessage(""); }} />}
+      {(mode === "login" || mode === "signup") && <SecondaryButton styles={styles} label="Back" onPress={onBack} />}
     </Screen>
   );
 }
@@ -520,12 +744,23 @@ function SetupScreen({ styles, setup, setSetup, onBack, onStart }) {
 
 function GameplayScreen({ styles, match, localPlayerId, selectedIds, onSelectCard, onDraw, onDiscard, onDeclare, onMenu }) {
   const player = currentPlayer(match);
-  const hand = match.hands[localPlayerId || player.id] || [];
   const isHuman = player.type === "human";
+  // Show only cards the viewer may see. During an AI turn on this device, the hand stays hidden.
+  const hand = localPlayerId ? match.hands[localPlayerId] || [] : isHuman ? match.hands[player.id] || [] : [];
   const canInteract = isHuman && (!localPlayerId || player.id === localPlayerId);
+  const discarded = match.turn.hasDiscarded;
   const drawn = match.turn.hasDrawn;
   const declareReady = canDeclare(match, player.id);
   const canDrawFromDrawPile = match.drawPile.length > 0 || match.discardPile.length > 1;
+  // Before discarding, the pile shows its top card. After discarding, it shows the card that can be picked up.
+  const pickupCard = discarded
+    ? match.discardPile.find((card) => card.id === match.turn.pickupCardId)
+    : match.discardPile[match.discardPile.length - 1];
+  const stepHint = !canInteract
+    ? ""
+    : !discarded
+      ? "Step 1: select cards of one rank and discard them."
+      : "Step 2: pick up the card from the discard pile or draw one from the draw pile.";
 
   return (
     <Screen styles={styles}>
@@ -536,14 +771,14 @@ function GameplayScreen({ styles, match, localPlayerId, selectedIds, onSelectCar
       </View>
       <ScoreboardPanel styles={styles} match={match} />
       <View style={styles.piles}>
-        <Pile styles={styles} label="Draw" count={match.drawPile.length || "Mix"} onPress={() => onDraw("draw")} disabled={!canInteract || drawn || !canDrawFromDrawPile} />
+        <Pile styles={styles} label="Draw" count={match.drawPile.length || "Mix"} onPress={() => onDraw("draw")} disabled={!canInteract || !discarded || drawn || !canDrawFromDrawPile} />
         <Pile
           styles={styles}
           label="Discard"
           count={match.discardPile.length}
-          top={match.discardPile[match.discardPile.length - 1]}
+          top={pickupCard}
           onPress={() => onDraw("discard")}
-          disabled={!canInteract || drawn || match.discardPile.length === 0}
+          disabled={!canInteract || !discarded || drawn || !pickupCard}
         />
       </View>
       <Text style={styles.label}>{localPlayerId ? "Your hand" : "Hand"}</Text>
@@ -552,9 +787,10 @@ function GameplayScreen({ styles, match, localPlayerId, selectedIds, onSelectCar
           <CardButton key={card.id} styles={styles} card={card} selected={selectedIds.includes(card.id)} onPress={() => onSelectCard(card)} disabled={!canInteract} />
         ))}
       </View>
+      {stepHint ? <Text style={styles.statusText}>{stepHint}</Text> : null}
       <View style={styles.actionBar}>
         <PrimaryButton styles={styles} label="Declare" disabled={!canInteract || !declareReady} onPress={onDeclare} />
-        <PrimaryButton styles={styles} label="Discard / End Turn" disabled={!canInteract || !drawn || selectedIds.length === 0} onPress={onDiscard} />
+        <PrimaryButton styles={styles} label="Discard" disabled={!canInteract || discarded || selectedIds.length === 0} onPress={onDiscard} />
       </View>
     </Screen>
   );
@@ -643,58 +879,69 @@ function SettingsScreen({ styles, settings, setSettings, onBack }) {
   );
 }
 
-function OnlineScreen({ styles, user, authToken, backendUrl, setBackendUrl, room, setRoom, status, onBack, onConnectRoom, onStartMatch, onLogout }) {
+function OnlineScreen({ styles, user, authToken, backendUrl, setBackendUrl, room, setRoom, status, onBack, onConnectRoom, onStartMatch, onLeaveRoom, onSessionExpired, onLogout }) {
   const [joinCode, setJoinCode] = useState("");
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
+  // Shared failure handling: a rejected token means the session ended, so return to login.
+  function handleFailure(error) {
+    if (error.status === 401) {
+      Alert.alert("Signed out", error.message);
+      onSessionExpired();
+      return;
+    }
+    setMessage(error.message);
+  }
+
   async function createRoom() {
     setBusy(true);
     setMessage("");
     try {
-      const response = await fetch(`${normalizeBackendUrl(backendUrl)}/rooms`, {
+      const body = await apiRequest(normalizeBackendUrl(backendUrl), "/rooms", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
+        token: authToken,
+        body: {
           host: onlinePlayer(user),
           settings: { max_players: maxPlayers, public: false, ai_fill_empty_seats: false, turn_timer_seconds: 45, spectators_enabled: false }
-        })
+        }
       });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "Could not create room.");
       setRoom(body);
       onConnectRoom(body.code);
     } catch (error) {
-      setMessage(error.message);
+      handleFailure(error);
     } finally {
       setBusy(false);
     }
   }
 
   async function joinRoom() {
-    if (!joinCode.trim()) {
+    const code = joinCode.trim().toUpperCase();
+    if (!code) {
       setMessage("Enter a room code.");
       return;
     }
     setBusy(true);
     setMessage("");
     try {
-      const code = joinCode.trim().toUpperCase();
-      const response = await fetch(`${normalizeBackendUrl(backendUrl)}/rooms/${code}/join`, {
+      const body = await apiRequest(normalizeBackendUrl(backendUrl), `/rooms/${encodeURIComponent(code)}/join`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ player: onlinePlayer(user) })
+        token: authToken,
+        body: { player: onlinePlayer(user) }
       });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || "Could not join room.");
       setRoom(body);
+      setJoinCode("");
       onConnectRoom(body.code);
     } catch (error) {
-      setMessage(error.message);
+      handleFailure(error);
     } finally {
       setBusy(false);
     }
+  }
+
+  function shareRoom() {
+    Share.share({ message: `Join my Declare game. Room code: ${room.code}` }).catch(() => {});
   }
 
   const isHost = room?.host_id === user.id;
@@ -739,6 +986,10 @@ function OnlineScreen({ styles, user, authToken, backendUrl, setBackendUrl, room
           </View>
           <Text style={styles.statusText}>ROOM CODE: {room.code}</Text>
           <PrimaryButton styles={styles} label="Start Remote Match" disabled={!isHost || room.players.length < 2} onPress={onStartMatch} />
+          <View style={styles.row}>
+            <SecondaryButton styles={styles} label="Share Code" onPress={shareRoom} />
+            <SecondaryButton styles={styles} label="Leave Room" onPress={onLeaveRoom} />
+          </View>
         </View>
       )}
       <SecondaryButton styles={styles} label="Logout" onPress={onLogout} />

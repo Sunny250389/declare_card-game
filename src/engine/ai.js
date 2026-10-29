@@ -12,7 +12,8 @@ function shouldDeclare(state, player) {
 }
 
 function chooseDrawSource(state, player) {
-  const topDiscard = state.discardPile[state.discardPile.length - 1];
+  // Called after the discard step, so the card on offer is the pickup card, not the top of the pile.
+  const topDiscard = state.discardPile.find((card) => card.id === state.turn.pickupCardId);
   if (!topDiscard) return "draw";
   const hand = state.hands[player.id];
   const matchingCount = hand.filter((card) => card.rank === topDiscard.rank).length;
@@ -51,11 +52,10 @@ function playAITurn(state) {
     return declareRound(state, player.id);
   }
 
-  const source = chooseDrawSource(state, player);
-  let next = drawCard(state, player.id, source);
-  const discardIds = chooseDiscardIds(next, player);
-  next = discardCards(next, player.id, discardIds);
-  return next;
+  const discardIds = chooseDiscardIds(state, player);
+  let next = discardCards(state, player.id, discardIds);
+  const source = chooseDrawSource(next, player);
+  return drawCard(next, player.id, source);
 }
 
 function playUntilHumanTurn(state, maxTurns = 20) {

@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 
 .vercel
+data/
+android/
+*.apk

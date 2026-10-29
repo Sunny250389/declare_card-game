@@ -16,11 +16,26 @@
       "bundleIdentifier": "com.declare.cardgame"
     },
     "android": {
-      "package": "com.declare.cardgame"
+      "package": "com.declare.cardgame",
+      "versionCode": 1,
+      "permissions": []
     },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
     "extra": {
-      "supports": ["ios", "android"],
-      "backend": "FastAPI WebSocket scaffold in backend.py"
+      "supports": [
+        "ios",
+        "android"
+      ],
+      "backend": "FastAPI + SQLite backend in backend/app.py (Dockerfile at repo root)"
     }
   }
 }

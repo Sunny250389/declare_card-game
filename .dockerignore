@@ -1,0 +1,15 @@
+.git
+.idea
+.expo
+.vercel
+node_modules
+dist
+web-build
+coverage
+data
+*.log
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.env
+.env.*

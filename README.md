@@ -1,68 +1,88 @@
 # Declare
 
-Declare is a cross-platform iOS and Android card game built with Expo React Native.
+Declare is a cross-platform iOS, Android, and web card game built with Expo React Native.
 
 ## What is included
 
-- Local pass-and-play match flow for 2-6 players.
-- Human and AI players with easy, medium, and hard decision strategies.
-- Full core rule engine for draw, discard, declare, round scoring, same-rank bonus, and match end at 100 points.
-- Mobile screens for home, setup, gameplay, round result, match result, statistics, settings, and online lobby entry.
-- Server-authoritative online multiplayer: every device receives only its own cards during play.
-- Email-verified registration, login, password visibility toggle, and password-reset codes.
+- Local pass-and-play match flow for 2-6 players, with human and AI players (easy, medium, hard).
+- Full rule engine for draw, discard, declare, round scoring, same-rank bonus, and match end at 100 points.
+- Online rooms that work over the internet: share a six-character room code and anyone with the app can join.
+- Server-authoritative online play: every device receives only its own cards during a match.
+- Accounts with email verification, login protection, password reset, and session restore.
 
-## Run the mobile app
+## Architecture
 
-Install dependencies with Node.js and npm, then run:
+| Part | Location | Notes |
+| --- | --- | --- |
+| Mobile and web app | `App.js`, `src/engine/` | Expo SDK 54. Local games run entirely on the device. |
+| Shared rules | `shared/rules.json` | Limits, ranks, and suits. Read by both the JS engine and the backend. |
+| Online backend | `backend/app.py`, `backend/store.py` | FastAPI with WebSockets. Accounts, rooms, and matches are stored in SQLite. |
+| Container | `Dockerfile` | Runs the backend on any host with a persistent volume (Render, Railway, Fly.io, a VPS). |
+
+The web build is a static site and can be deployed to Vercel. The backend must run as a long-lived service, because
+Vercel serverless functions cannot hold the WebSocket connections that rooms use.
+
+## Run the app locally
 
 ```bash
 npm install
 npm start
 ```
 
-Use Expo to open the app on iOS or Android.
+Open the app with Expo on iOS or Android, or press `w` for the web version.
 
-## Remote rooms on phones
-
-Start the backend so phones on your network can reach it:
+## Run the backend locally
 
 ```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
+pip install -r backend/requirements.txt
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-Find your computer's local IP address, then enter this in the app login screen:
+Point the app at `http://localhost:8000` (web) or `http://YOUR-COMPUTER-IP:8000` (phone on the same Wi-Fi).
+Without SMTP configured, codes are only shown in the app when `ALLOW_DEVELOPMENT_CODES=true`.
 
-```text
-http://YOUR-COMPUTER-IP:8000
+## Deploy the backend so anyone can join
+
+1. Deploy from this repository with the root `Dockerfile` (on Render, Railway, or Fly.io, choose "Docker").
+2. Add a persistent volume mounted at `/data`. The database lives at `/data/declare.sqlite3`.
+3. Set environment variables from `.env.example`: at minimum the `SMTP_*` settings. Leave `ALLOW_DEVELOPMENT_CODES` unset.
+4. Check `https://YOUR-BACKEND/health` returns `{"status":"ok"}`.
+
+Run only one backend instance. Rooms and WebSocket connections are held by the process that owns them, so
+scaling out to several instances needs a shared message bus (for example Redis pub/sub) first.
+
+## Deploy the web app
+
+1. Create a Vercel project from this repository. Use the **Other** framework preset. The root `vercel.json` builds the Expo web app into `dist`.
+2. Set `EXPO_PUBLIC_API_URL` to your backend URL (for example `https://declare-api.example.com`) before building.
+3. Deploy. The app will reach your backend from any network.
+
+For mobile builds, set `EXPO_PUBLIC_API_URL` in your EAS production environment and publish a new build.
+Players can also type the server URL on the login screen.
+
+## Set up email
+
+Verification and password-reset codes are sent by email. Any SMTP provider works (Gmail, Brevo, Mailgun, Amazon SES, SendGrid, and others). Set the `SMTP_*` variables from `.env.example` on the backend server, then check them before going live:
+
+```bash
+python -m backend.send_test you@example.com
 ```
 
-For friends outside your Wi-Fi network, expose the backend with a public tunnel or deploy it to a server, then use that public URL in the app.
+It prints either the successful send or the exact reason it failed, such as a rejected login. Gmail needs an app password, not your normal password.
 
-## Deploy the API with Vercel
+## Accounts
 
-Vercel deploys the Expo web game from the repository root. In Vercel, use the **Other** framework preset and set `EXPO_PUBLIC_API_URL` to the separately hosted backend URL. The `backend` directory is excluded from the frontend deployment.
+- Passwords must be 15 to 128 characters. Passphrases, spaces, and symbols are allowed. Common passphrases are rejected.
+- New accounts verify a six-digit email code before they can sign in. Codes expire after 15 minutes and lock after five wrong attempts.
+- Sign-in locks for 15 minutes after five failed attempts. Code emails can be requested once per minute.
+- Sessions last 30 days. Resetting a password signs out every other device.
 
-After Vercel gives you an HTTPS URL, add it with `/api` as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel API URL manually in the login screen while testing.
+## Room rules
 
-The current room, account, and WebSocket connection maps are stored in process memory. This is suitable for a local server but not a durable multi-instance Vercel deployment. Before relying on Vercel for remote multiplayer, move that shared state to Redis or another database and use a Vercel-compatible realtime transport.
-
-## Accounts and email verification
-
-New accounts must verify a six-digit code before they can sign in. Passwords must be 15 to 128 characters; passphrases, spaces, and symbols are supported, while common passwords are rejected. Passwords are salted and hashed by the server.
-
-For real email delivery, configure your SMTP provider before starting Uvicorn:
-
-```powershell
-$env:SMTP_HOST = "smtp.example.com"
-$env:SMTP_PORT = "587"
-$env:SMTP_FROM = "no-reply@example.com"
-$env:SMTP_USERNAME = "smtp-user"
-$env:SMTP_PASSWORD = "smtp-password"
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
-```
-
-When SMTP is not configured, the app displays a development-only code so you can test registration and password reset locally. Vercel disables this fallback by default; never enable `ALLOW_DEVELOPMENT_CODES` on a public deployment.
+- A room holds 2 to 6 players. The host starts the match once two or more players have joined.
+- Players can join or leave while the room is idle. Joining is blocked while a match is in progress, and leaving is blocked until it finishes.
+- If the host leaves, the next player becomes host. The room is removed when the last player leaves.
+- Reconnecting after a dropped connection restores the current state automatically.
 
 ## Verify the engine
 
@@ -70,11 +90,8 @@ When SMTP is not configured, the app displays a development-only code so you can
 npm run test:engine
 ```
 
-## Online backend scaffold
-
-The local backend entry point is `backend/app.py`.
+## Run backend tests
 
 ```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --reload
+python -m pytest backend/tests -q
 ```
