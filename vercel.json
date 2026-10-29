@@ -1,6 +1,5 @@
 {
   "framework": null,
-  "public": true,
   "installCommand": "npm ci",
   "buildCommand": "npx --no-install expo export --platform web",
   "outputDirectory": "dist",
