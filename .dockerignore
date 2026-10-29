@@ -1,7 +1,6 @@
 .git
 .idea
 .expo
-.vercel
 node_modules
 dist
 web-build

@@ -19,8 +19,8 @@ Declare is a cross-platform iOS, Android, and web card game built with Expo Reac
 | Online backend | `backend/app.py`, `backend/store.py` | FastAPI with WebSockets. Accounts, rooms, and matches are stored in SQLite. |
 | Container | `Dockerfile` | Runs the backend on any host with a persistent volume (Render, Railway, Fly.io, a VPS). |
 
-The web build is a static site and can be deployed to Vercel. The backend must run as a long-lived service, because
-Vercel serverless functions cannot hold the WebSocket connections that rooms use.
+The backend must run as a long-lived service, because online rooms use WebSocket connections that serverless hosts
+cannot keep open. The web build is a static site and can be hosted on any static host.
 
 ## Run the app locally
 
@@ -53,9 +53,8 @@ scaling out to several instances needs a shared message bus (for example Redis p
 
 ## Deploy the web app
 
-1. Create a Vercel project from this repository. Use the **Other** framework preset. The root `vercel.json` builds the Expo web app into `dist`.
-2. Set `EXPO_PUBLIC_API_URL` to your backend URL (for example `https://declare-api.example.com`) before building.
-3. Deploy. The app will reach your backend from any network.
+1. Set `EXPO_PUBLIC_API_URL` to your backend URL (for example `https://declare-api.example.com`), then build with `npx expo export --platform web`. The output goes to `dist`.
+2. Upload `dist` to any static host. The app will reach your backend from any network.
 
 For mobile builds, set `EXPO_PUBLIC_API_URL` in your EAS production environment and publish a new build.
 Players can also type the server URL on the login screen.
