@@ -10,6 +10,9 @@ export function WelcomeScreen({ onLogin, onPlayWithoutAccount }) {
       </div>
       <PrimaryButton label="Login or Sign Up" onClick={onLogin} />
       <SecondaryButton label="Play without account" onClick={onPlayWithoutAccount} />
+      <p className="muted small">
+        <a href="/privacy.html" target="_blank" rel="noreferrer">Privacy policy</a>
+      </p>
     </Screen>
   );
 }

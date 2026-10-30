@@ -13,10 +13,13 @@
     "test:backend": "python -m pytest backend/tests -q"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
     "@testing-library/react": "^16.0.0",
     "@vitejs/plugin-react": "^5.0.0",
     "jsdom": "^26.0.0",
