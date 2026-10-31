@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import smtplib
 import ssl
+import urllib.request
 from dataclasses import dataclass
 from email.message import EmailMessage
+
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 
 @dataclass(frozen=True)
@@ -46,8 +50,27 @@ def build_message(settings: SmtpSettings, to: str, subject: str, body: str) -> E
     return message
 
 
+def send_with_brevo_api(api_key: str, sender: str, to: str, subject: str, body: str) -> None:
+    """Send one email over Brevo's HTTPS API. Some hosts block outbound SMTP ports, so this path avoids them."""
+    payload = {"sender": {"email": sender}, "to": [{"email": to}], "subject": subject, "textContent": body}
+    request = urllib.request.Request(
+        BREVO_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"api-key": api_key, "content-type": "application/json", "accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10):
+        pass
+
+
 def send_email(to: str, subject: str, body: str) -> bool:
-    """Send one email. Returns False when SMTP is not configured. Raises on delivery errors."""
+    """Send one email. Returns False when email is not configured. Raises on delivery errors."""
+    api_key = os.getenv("BREVO_API_KEY")
+    sender = os.getenv("SMTP_FROM")
+    if api_key and sender:
+        send_with_brevo_api(api_key, sender, to, subject, body)
+        return True
+
     settings = load_settings()
     if settings is None:
         return False
