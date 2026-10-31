@@ -3,7 +3,7 @@
 A running record of what was built in this repo, why, and where things stand. Newest changes are at the bottom of
 each section. Secrets (passwords, app passwords, signing keys) are never recorded here.
 
-Last updated: 30 October 2026.
+Last updated: 31 October 2026.
 
 ## Current state at a glance
 
@@ -11,8 +11,9 @@ Last updated: 30 October 2026.
 - **Client:** installable web app (PWA) built with React and Vite. No Expo.
 - **Server:** FastAPI backend with WebSockets, SQLite storage, and SMTP email.
 - **Branch:** `feature/online-rooms-email-android`, pushed to GitHub (`Sunny250389/declare_card-game`). `main` is unchanged.
-- **Latest commits on the branch:** `82d8ac9` (web app rebuild and tests). Later work is uncommitted (see "Open items").
-- **Tests:** 66 frontend tests (Vitest) and 20 backend tests (pytest). All pass.
+- **Latest commits on the branch:** `60d43e5` (email through Brevo's HTTPS API). Everything is committed and pushed.
+- **Backend:** live on Render at `https://declare-backend-6nlt.onrender.com` (health check at `/health`).
+- **Tests:** 66 frontend tests (Vitest) and 22 backend tests (pytest). All pass.
 - **Store listing:** Google Play Console already has the developer account. The app is not published yet.
 
 ## Timeline
@@ -82,7 +83,17 @@ Last updated: 30 October 2026.
 - `android/` was generated with `npx cap add android`. The folder is ignored by git for now (see "Open items").
 - `public/privacy.html`: privacy policy page for Play. Name and email are filled in. Still needs the email provider and hosting provider names.
 - The welcome screen links to the privacy page.
-- Plan: new app listing in the existing Play Console. Upload key created by the user, Play App Signing for the rest. Closed testing with friends. Google requires 12 testers for 14 days for a new personal developer account. Please check the current rule in Play Console.
+- Plan: new app listing in the existing Play Console.
+
+### 11. Backend hosted on Render (commits `e2f9db2`, `697bb14`, `60d43e5`)
+- `render.yaml` Blueprint: Docker web service `declare-backend` on the free plan, health check `/health`. SMTP secrets are entered in the Render dashboard, not in the file.
+- Removed `VOLUME` from the Dockerfile. Render uses its own disks.
+- The app reads the backend URL at build time (`VITE_API_URL`). It can also be set per device on the Login screen's Server URL field, and that saved value overrides the build default. Check it when the app can't reach the server.
+- Email failed in three steps:
+  1. Gmail SMTP on port 587 returned `503 Email delivery is not configured`. The Render environment had the values, but `deliver_code` swallowed the SMTP error, so nothing was logged.
+  2. Added logging for missing SMTP settings and for SMTP exceptions (`697bb14`). The logs then showed `OSError: [Errno 101] Network is unreachable` from `smtplib`.
+  3. The same error happened with Brevo's SMTP relay, so Render blocks outbound SMTP. Email now goes through Brevo's HTTPS API when `BREVO_API_KEY` is set (`60d43e5`). SMTP remains the fallback for local use.
+- First verification email arrived through Brevo after that change. Upload key created by the user, Play App Signing for the rest. Closed testing with friends. Google requires 12 testers for 14 days for a new personal developer account. Please check the current rule in Play Console.
 
 ## Architecture (current)
 
@@ -91,7 +102,8 @@ Last updated: 30 October 2026.
 | Web app (PWA) | `src/`, `index.html`, `public/` | React 19.3.1 (pinned), Vite 7 |
 | Game rules | `src/engine/` | Pure JavaScript modules |
 | Shared rules | `shared/rules.json` | Limits, ranks, suits. Read by JS and Python |
-| Backend | `backend/app.py`, `backend/store.py`, `backend/mailer.py` | FastAPI, SQLite, SMTP |
+| Backend | `backend/app.py`, `backend/store.py`, `backend/mailer.py` | FastAPI, SQLite, email via Brevo API (SMTP fallback) |
+| Hosting (backend) | `render.yaml`, `Dockerfile` | Render, free plan, `https://declare-backend-6nlt.onrender.com` |
 | Email tools | `backend/send_test.py` | Checks SMTP settings |
 | Container | `Dockerfile`, `.dockerignore` | Runs the backend on any host with a persistent disk |
 | Android (Capacitor) | `capacitor.config.json`, `android/` | Generated, not yet built or signed |
@@ -110,13 +122,14 @@ python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000     backend
 ```
 
 Environment (see `.env.example`): `VITE_API_URL` (build time), `DATABASE_PATH`, `CORS_ORIGINS`, `SMTP_HOST`,
-`SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_USE_SSL`, and
-`ALLOW_DEVELOPMENT_CODES` (local testing only).
+`SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_STARTTLS`, `SMTP_USE_SSL`, `BREVO_API_KEY`
+(takes priority over SMTP when set), and `ALLOW_DEVELOPMENT_CODES` (local testing only).
 
 ## Decisions
 
 - **Web app first, then native:** an installable web app reaches iPhone users without a store account. Capacitor wraps the same code for Android and later iOS.
 - **Hosting:** Render for the backend. The free plan is fine for testing, but its data resets. The paid plan (about $7 a month) keeps accounts and rooms on a disk.
+- **Email:** Brevo's HTTPS API (free tier about 300 emails a day), because Render blocks outbound SMTP. Gmail SMTP is kept only for local testing. The sender address in `SMTP_FROM` must be verified in Brevo.
 - **Store:** Google Play for Android. Apple App Store and TestFlight later, which needs an Apple Developer account ($99 a year).
 - **Privacy policy:** served from the same host as the app (GitHub Pages, or the app host), at no cost.
 - **SQLite:** one backend process owns the database. Scaling out needs a shared store and a message bus.
@@ -124,11 +137,11 @@ Environment (see `.env.example`): `VITE_API_URL` (build time), `DATABASE_PATH`, 
 
 ## Open items
 
-1. **Commit the Capacitor and privacy work.** It's uncommitted: `package.json`, `package-lock.json`, `capacitor.config.json`, `public/privacy.html`, and the Welcome link.
+1. **Revoke the keys pasted in chat.** The Brevo API key was pasted in chat on 31 October. Revoke it in Brevo, create a new one, and keep it only in Render as `BREVO_API_KEY`. Also confirm the Gmail app password that was shared earlier has been revoked.
 2. **Decide whether to commit `android/`.** It's git-ignored, but Capacitor projects are usually committed. It must not contain keystores or passwords.
-3. **Revoke the Gmail app password** that was shared in chat, then create a new one and enter it only in a local terminal.
-4. **Choose an email provider name and a hosting provider name** for the privacy policy. Replace the placeholders in `public/privacy.html`.
-5. **Host the backend on Render.** Choose free (for testing) or paid (for keeping data). Then set `VITE_API_URL` to the Render HTTPS address and rebuild.
+3. **Choose an email provider name and a hosting provider name** for the privacy policy. Replace the placeholders in `public/privacy.html`. Email is now Brevo and the backend host is Render.
+4. **Remove unused SMTP settings in Render** (optional). `BREVO_API_KEY` takes priority, so the SMTP variables are no longer used for sending.
+5. **Host the web app** on an HTTPS static host (for example GitHub Pages or Netlify). Build it with `VITE_API_URL=https://declare-backend-6nlt.onrender.com npm run build`, then publish `dist/`. The PWA install needs HTTPS.
 6. **Create the Android upload key** (`keytool`, stored outside the repo). Configure Gradle signing, set `versionCode`, and build the `.aab`.
 7. **Play listing:** icon (512 px, ready), feature graphic (1024×500, needed), at least two phone screenshots, data safety form, content rating, target audience.
 8. **Closed testing:** add testers' emails, check the 12-tester and 14-day rule in Play Console, then share the opt-in link.
@@ -139,6 +152,9 @@ Environment (see `.env.example`): `VITE_API_URL` (build time), `DATABASE_PATH`, 
 
 - Sign-up and sign-in need the backend to be reachable. Local play works without it.
 - Rooms are held by one backend process, so run only one instance.
+- Render's free plan has no disk, so accounts and rooms reset on every restart or redeploy. It also sleeps after 15 minutes idle, so the first request can take up to a minute.
+- Render blocks outbound SMTP. Gmail and Brevo both failed with `Network is unreachable` on port 587, and port 2525 was not tested. Email must go through an HTTPS API.
+- Brevo's free tier allows about 300 emails a day, and free emails carry a Brevo footer.
 - The Android build allows plain HTTP only for local testing. The Play build must use HTTPS.
 - The Gmail sending limit is small, which is fine for a few friends but not for public use.
 - Headless Chrome narrow windows clip layouts. Check with device emulation instead.
