@@ -17,7 +17,6 @@ COPY shared shared
 COPY backend backend
 
 RUN mkdir -p /data
-VOLUME ["/data"]
 
 EXPOSE 8000
 

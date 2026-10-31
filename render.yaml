@@ -1,0 +1,36 @@
+# Render Blueprint for the online backend. Connect the repo in Render: New > Blueprint.
+# Secrets (SMTP_*) are not stored here; enter them in the Render dashboard when prompted.
+#
+# Free plan: no persistent disk, so accounts and rooms reset on every restart or redeploy,
+# and the service sleeps after 15 minutes idle. Fine for testing with friends.
+# To keep data, switch to a paid plan and add a disk mounted at /data (see the notes in
+# DEVELOPMENT.md), then keep one instance.
+services:
+  - type: web
+    name: declare-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/declare.sqlite3
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: ALLOW_DEVELOPMENT_CODES
+        value: "false"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_STARTTLS
+        value: "true"
+      - key: SMTP_USE_SSL
+        value: "false"
