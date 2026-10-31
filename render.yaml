@@ -34,3 +34,19 @@ services:
         value: "true"
       - key: SMTP_USE_SSL
         value: "false"
+
+  # The installable web app (PWA). Built with the backend URL baked in at build time.
+  - type: web
+    name: declare-web
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: VITE_API_URL
+        value: https://declare-backend-6nlt.onrender.com
+    headers:
+      - path: /sw.js
+        name: Cache-Control
+        value: no-cache
