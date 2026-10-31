@@ -1,0 +1,8 @@
+{
+  "appId": "com.declare.cardgame",
+  "appName": "Declare",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}

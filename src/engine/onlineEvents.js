@@ -19,4 +19,4 @@ const ONLINE_EVENTS = Object.freeze({
   SPECTATOR_JOINED: "SpectatorJoined"
 });
 
-module.exports = { ONLINE_EVENTS };
+export { ONLINE_EVENTS };

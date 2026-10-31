@@ -1,8 +1,9 @@
-const { createDeck, shuffle } = require("./cards");
+import { createDeck, shuffle } from "./cards.js";
+import rules from "../../shared/rules.json";
 
-const MATCH_LIMIT = 100;
-const DECLARE_LIMIT = 15;
-const DEFAULT_HAND_SIZE = 5;
+const MATCH_LIMIT = rules.match_limit;
+const DECLARE_LIMIT = rules.declare_limit;
+const DEFAULT_HAND_SIZE = rules.hand_size;
 
 function createPlayer(input, index) {
   return {
@@ -37,7 +38,7 @@ function createMatch(config) {
     drawPile: [],
     discardPile: [],
     hands: {},
-    turn: { hasDrawn: false },
+    turn: freshTurn(),
     roundResult: null,
     matchStats: {
       roundsPlayed: 0,
@@ -69,15 +70,18 @@ function startRound(state, seed = Date.now() + state.roundNumber) {
     hands[player.id] = drawPile.splice(0, handSize);
   }
 
+  // The round opens with one card already on the discard pile, so the first player has something to pick up.
+  const starter = drawPile.pop();
+
   return {
     ...state,
     status: "playing",
     roundNumber: state.roundNumber + 1,
     currentPlayerIndex: 0,
     drawPile,
-    discardPile: [],
+    discardPile: [starter],
     hands,
-    turn: { hasDrawn: false },
+    turn: freshTurn(),
     roundResult: null,
     eventLog: appendEvent(state, "GameStarted", { roundNumber: state.roundNumber + 1 })
   };
@@ -94,6 +98,12 @@ function appendEvent(state, type, payload = {}) {
       at: new Date().toISOString()
     }
   ];
+}
+
+// pickupCardId is the card that was on top of the discard pile before this turn's discard.
+// It is the only discard-pile card the player may take this turn.
+function freshTurn(pickupCardId = null) {
+  return { hasDiscarded: false, hasDrawn: false, pickupCardId };
 }
 
 function handValue(hand) {
@@ -126,35 +136,10 @@ function reshuffleDrawPile(state) {
   };
 }
 
-function drawCard(state, playerId, source) {
-  requireCurrentTurn(state, playerId);
-  if (state.turn.hasDrawn) throw new Error("Only one draw action is allowed per turn.");
-
-  let next = source === "draw" ? reshuffleDrawPile(state) : state;
-  const fromDrawPile = source === "draw";
-  const pile = fromDrawPile ? next.drawPile : next.discardPile;
-  if (!pile.length) throw new Error(source === "draw" ? "Draw pile is empty." : "Discard pile is empty.");
-
-  const card = pile[pile.length - 1];
-  const updatedPile = pile.slice(0, -1);
-  next = {
-    ...next,
-    drawPile: fromDrawPile ? updatedPile : next.drawPile,
-    discardPile: fromDrawPile ? next.discardPile : updatedPile,
-    hands: {
-      ...next.hands,
-      [playerId]: [...next.hands[playerId], card]
-    },
-    turn: { hasDrawn: true, source },
-    eventLog: appendEvent(next, "CardDrawn", { playerId, source })
-  };
-
-  return next;
-}
-
+// Turn order: discard first (required), then pick up one card (required). Picking up ends the turn.
 function discardCards(state, playerId, cardIds) {
   requireCurrentTurn(state, playerId);
-  if (!state.turn.hasDrawn) throw new Error("Draw before discarding.");
+  if (state.turn.hasDiscarded) throw new Error("You have already discarded this turn.");
   if (!cardIds || cardIds.length === 0) throw new Error("Select at least one card to discard.");
   if (new Set(cardIds).size !== cardIds.length) throw new Error("Discard contains duplicate card IDs.");
 
@@ -167,36 +152,68 @@ function discardCards(state, playerId, cardIds) {
 
   const selectedIds = new Set(cardIds);
   const remainingHand = hand.filter((card) => !selectedIds.has(card.id));
-  const nextIndex = (state.currentPlayerIndex + 1) % state.players.length;
+  const topBeforeDiscard = state.discardPile[state.discardPile.length - 1];
 
   return {
     ...state,
-    currentPlayerIndex: nextIndex,
     hands: {
       ...state.hands,
       [playerId]: remainingHand
     },
     discardPile: [...state.discardPile, ...selected],
-    turn: { hasDrawn: false },
-    eventLog: appendEvent(state, "CardsDiscarded", {
-      playerId,
-      cardIds,
-      nextPlayerId: state.players[nextIndex].id
-    })
+    turn: { hasDiscarded: true, hasDrawn: false, pickupCardId: topBeforeDiscard ? topBeforeDiscard.id : null },
+    eventLog: appendEvent(state, "CardsDiscarded", { playerId, cardIds })
   };
 }
 
+// Pick up one card from the draw pile, or the pickup card from the discard pile. Ends the turn.
+function drawCard(state, playerId, source) {
+  requireCurrentTurn(state, playerId);
+  if (!state.turn.hasDiscarded) throw new Error("Discard before picking up a card.");
+  if (state.turn.hasDrawn) throw new Error("Only one pick-up is allowed per turn.");
+
+  let next = source === "draw" ? reshuffleDrawPile(state) : state;
+  let card;
+  if (source === "draw") {
+    if (!next.drawPile.length) throw new Error("Draw pile is empty.");
+    card = next.drawPile[next.drawPile.length - 1];
+    next = { ...next, drawPile: next.drawPile.slice(0, -1) };
+  } else if (source === "discard") {
+    const index = next.discardPile.findIndex((item) => item.id === next.turn.pickupCardId);
+    if (index === -1) throw new Error("No discarded card is available to pick up.");
+    card = next.discardPile[index];
+    next = { ...next, discardPile: next.discardPile.filter((_, position) => position !== index) };
+  } else {
+    throw new Error("Pick up from the draw pile or the discard pile.");
+  }
+
+  const nextIndex = (state.currentPlayerIndex + 1) % state.players.length;
+  return {
+    ...next,
+    currentPlayerIndex: nextIndex,
+    hands: {
+      ...next.hands,
+      [playerId]: [...next.hands[playerId], card]
+    },
+    turn: freshTurn(),
+    eventLog: appendEvent(next, "CardDrawn", { playerId, source, nextPlayerId: state.players[nextIndex].id })
+  };
+}
+
+// Declaring is an alternative to the turn, so it is only allowed before this turn's discard.
 function canDeclare(state, playerId) {
   return (
     state.status === "playing" &&
     currentPlayer(state).id === playerId &&
-    handValue(state.hands[playerId] || []) < DECLARE_LIMIT
+    !state.turn.hasDiscarded &&
+    handValue(state.hands[playerId] || []) <= DECLARE_LIMIT
   );
 }
 
 function declareRound(state, playerId) {
   requireCurrentTurn(state, playerId);
-  if (!canDeclare(state, playerId)) throw new Error("A player may declare only below 15 points.");
+  if (state.turn.hasDiscarded) throw new Error("You can declare only at the start of your turn, before discarding.");
+  if (!canDeclare(state, playerId)) throw new Error("A player may declare only at 15 points or less.");
 
   const declareResult = resolveDeclare(state, playerId);
   const players = state.players.map((player) => {
@@ -305,7 +322,7 @@ function finalLeaderboard(state) {
   return [...state.players].sort((a, b) => a.totalScore - b.totalScore);
 }
 
-module.exports = {
+export {
   DECLARE_LIMIT,
   MATCH_LIMIT,
   allSameRank,

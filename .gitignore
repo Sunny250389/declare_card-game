@@ -1,5 +1,4 @@
 node_modules/
-.expo/
 dist/
 web-build/
 coverage/
@@ -8,4 +7,6 @@ coverage/
 __pycache__/
 .pytest_cache/
 
-.vercel
+data/
+android/
+*.apk

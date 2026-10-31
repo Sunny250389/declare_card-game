@@ -1,80 +1,124 @@
 # Declare
 
-Declare is a cross-platform iOS and Android card game built with Expo React Native.
+Declare is a card game for two to six players: lowest hand wins, and a match ends at 100 points. It runs in any
+modern browser and installs to your home screen on Android and iPhone, with no app store needed.
 
-## What is included
+## Features
 
-- Local pass-and-play match flow for 2-6 players.
-- Human and AI players with easy, medium, and hard decision strategies.
-- Full core rule engine for draw, discard, declare, round scoring, same-rank bonus, and match end at 100 points.
-- Mobile screens for home, setup, gameplay, round result, match result, statistics, settings, and online lobby entry.
-- Server-authoritative online multiplayer: every device receives only its own cards during play.
-- Email-verified registration, login, password visibility toggle, and password-reset codes.
+- Play on one device against AI players (easy, medium, hard), or with friends online.
+- Online rooms with a shareable six-character code. Each device sees only its own cards.
+- Accounts with email verification, sign-in protection, password reset, and sessions that stay signed in.
+- An unfinished local match can be resumed. Each account keeps its own.
+- Works offline for the app itself once it has been opened once (installed app only).
 
-## Run the mobile app
+## How to play
 
-Install dependencies with Node.js and npm, then run:
+Each turn has two steps:
+
+1. **Discard** one or more cards of the same rank. The turn does not end yet.
+2. **Pick up** one card, either from the draw pile or the card that was on top of the discard pile before your discard.
+   Picking up ends your turn.
+
+A round starts with one card already on the discard pile. Before you discard, you may **declare** if your hand is 15
+points or less. A declare ends the round and scores it:
+
+- Someone with a lower hand: you score 50 and they score 0.
+- A tie: you score double your hand, and the tied players score 0.
+- Your hand is all one rank: you score -25.
+- Otherwise: you score 0 and everyone else scores their hand value.
+
+## Architecture
+
+| Part | Location | Notes |
+| --- | --- | --- |
+| Web app (PWA) | `src/`, `index.html`, `public/` | React and Vite. Installable, with an offline app shell. |
+| Game rules | `src/engine/` | Pure JavaScript, no framework. Used by the app and the tests. |
+| Shared rules | `shared/rules.json` | Limits, ranks, and suits. Read by the JavaScript engine and the Python backend. |
+| Online backend | `backend/app.py`, `backend/store.py`, `backend/mailer.py` | FastAPI with WebSockets. Data in SQLite. |
+| Container | `Dockerfile` | Runs the backend on any host with a persistent volume. |
+
+The backend keeps rooms in memory on a single process, so it must run as one long-lived service. Serverless hosts
+cannot keep the WebSocket connections that rooms need.
+
+## Run the app on this computer
 
 ```bash
 npm install
-npm start
+npm run dev
 ```
 
-Use Expo to open the app on iOS or Android.
+Open http://localhost:5173. The app reaches the backend on port 8000 of the same host.
 
-## Remote rooms on phones
-
-Start the backend so phones on your network can reach it:
+## Run the backend
 
 ```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
+pip install -r backend/requirements.txt
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-Find your computer's local IP address, then enter this in the app login screen:
+Without email set up, codes are shown on screen only when `ALLOW_DEVELOPMENT_CODES=true`.
 
-```text
-http://YOUR-COMPUTER-IP:8000
-```
+## Use it on a phone on the same Wi-Fi
 
-For friends outside your Wi-Fi network, expose the backend with a public tunnel or deploy it to a server, then use that public URL in the app.
+1. Start the backend and the web app on this computer. `npm run dev` already listens on all network addresses.
+2. Allow inbound connections on ports 5173 and 8000 in Windows Firewall. Set the Wi-Fi to **Private** first, or add a rule
+   for the Private profile.
+3. On the phone, open `http://YOUR-COMPUTER-IP:5173`. The app uses `http://YOUR-COMPUTER-IP:8000` for the backend.
 
-## Deploy the API with Vercel
+Installing to the home screen needs a secure connection (HTTPS), so for a permanent install, host the app (see below).
 
-Vercel deploys the Expo web game from the repository root. In Vercel, use the **Other** framework preset and set `EXPO_PUBLIC_API_URL` to the separately hosted backend URL. The `backend` directory is excluded from the frontend deployment.
+- **Android (Chrome):** menu → **Install app**.
+- **iPhone (Safari):** share button → **Add to Home Screen**.
 
-After Vercel gives you an HTTPS URL, add it with `/api` as `EXPO_PUBLIC_API_URL` in your Expo/EAS production environment, then publish a new mobile build or update. The mobile app can also enter the Vercel API URL manually in the login screen while testing.
+## Install on a phone from a hosted site
 
-The current room, account, and WebSocket connection maps are stored in process memory. This is suitable for a local server but not a durable multi-instance Vercel deployment. Before relying on Vercel for remote multiplayer, move that shared state to Redis or another database and use a Vercel-compatible realtime transport.
-
-## Accounts and email verification
-
-New accounts must verify a six-digit code before they can sign in. Passwords must be 15 to 128 characters; passphrases, spaces, and symbols are supported, while common passwords are rejected. Passwords are salted and hashed by the server.
-
-For real email delivery, configure your SMTP provider before starting Uvicorn:
-
-```powershell
-$env:SMTP_HOST = "smtp.example.com"
-$env:SMTP_PORT = "587"
-$env:SMTP_FROM = "no-reply@example.com"
-$env:SMTP_USERNAME = "smtp-user"
-$env:SMTP_PASSWORD = "smtp-password"
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
-```
-
-When SMTP is not configured, the app displays a development-only code so you can test registration and password reset locally. Vercel disables this fallback by default; never enable `ALLOW_DEVELOPMENT_CODES` on a public deployment.
-
-## Verify the engine
+Host the built app over HTTPS, then open that address in Chrome or Safari and use the install steps above.
 
 ```bash
-npm run test:engine
+VITE_API_URL=https://your-backend.example.com npm run build
 ```
 
-## Online backend scaffold
+This creates `dist/`. Upload it to any static host (for example Netlify, Cloudflare Pages, GitHub Pages, or your own server).
+`VITE_API_URL` must point to the public HTTPS address of the backend, because it is built into the app.
 
-The local backend entry point is `backend/app.py`.
+## Tests
 
 ```bash
-pip install -r requirements.txt
-uvicorn backend.app:app --reload
+npm test                  # engine rules, helpers, and component tests (Vitest)
+npm run test:backend      # backend API, rooms over WebSocket, and email (pytest)
 ```
+
+## Set up email
+
+Verification and password-reset codes are sent by email. Any SMTP provider works (Gmail, Brevo, Mailgun, Amazon SES,
+SendGrid, and others). Set the `SMTP_*` variables from `.env.example` on the backend server, then check them:
+
+```bash
+python D:\Projects\declare_card-game\backend\send_test.py you@example.com
+```
+
+It prints either the successful send or the exact reason it failed, such as a rejected login. Gmail needs an app
+password, not your normal password.
+
+## Accounts
+
+- Passwords must be 15 to 128 characters. Passphrases, spaces, and symbols are allowed. Common passphrases are rejected.
+- New accounts verify a six-digit email code before they can sign in. Codes expire after 15 minutes and lock after five wrong attempts.
+- Sign-in locks for 15 minutes after five failed attempts. Code emails can be requested once per minute.
+- Sessions last 30 days. Resetting a password signs out every other device.
+
+## Room rules
+
+- A room holds 2 to 6 players. The host starts the match once two or more players have joined.
+- Players can join or leave while the room is idle. Joining is blocked while a match is in progress, and leaving is blocked until it finishes.
+- If the host leaves, the next player becomes host. The room is removed when the last player leaves.
+- Reconnecting after a dropped connection restores the current state automatically.
+
+## Deploy the backend
+
+1. Deploy the root `Dockerfile` on Render, Railway, or Fly.io.
+2. Add a persistent volume mounted at `/data`. The database lives at `/data/declare.sqlite3`.
+3. Set the environment variables from `.env.example`, at minimum the `SMTP_*` settings. Leave `ALLOW_DEVELOPMENT_CODES` unset.
+4. Check that `https://YOUR-BACKEND/health` returns `{"status":"ok"}`.
+
+Run only one backend instance. Rooms and WebSocket connections are held by the process that owns them.

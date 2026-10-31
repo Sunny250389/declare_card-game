@@ -1,5 +1,7 @@
-const SUITS = ["spades", "hearts", "diamonds", "clubs"];
-const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+import rules from "../../shared/rules.json";
+
+const SUITS = rules.suits;
+const RANKS = rules.ranks;
 
 function rankPoints(rank) {
   if (rank === "A") return 1;
@@ -51,7 +53,7 @@ function cardLabel(card) {
   return `${card.rank}${suit}`;
 }
 
-module.exports = {
+export {
   SUITS,
   RANKS,
   cardLabel,
