@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import random
@@ -22,6 +23,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend import mailer
 from backend.store import Store
+
+logger = logging.getLogger("declare")
 
 
 RULES = json.loads((Path(__file__).resolve().parent.parent / "shared" / "rules.json").read_text(encoding="utf-8"))
@@ -379,9 +382,12 @@ def development_codes_allowed() -> bool:
 
 def deliver_code(email: str, subject: str, content: str) -> bool:
     try:
-        return mailer.send_email(email, subject, content)
+        if mailer.send_email(email, subject, content):
+            return True
+        logger.warning("Email not sent: SMTP_HOST or SMTP_FROM is not set.")
     except (OSError, smtplib.SMTPException):
-        return False
+        logger.exception("Email failed to send. Check the SMTP_* settings.")
+    return False
 
 
 def verification_response(user: StoredUser, code: str) -> VerificationResponse:
